@@ -14,10 +14,10 @@ Inductive lval : Type :=
 Inductive value : Type :=
   | Unit
   | Int (n : nat)
-  | OwnRef
-  | BorrowRef.
+  | OwnRef (s : string)
+  | BorrowRef (s : string).
 
-Inductive partal_value : Type :=
+Inductive partial_value : Type :=
   | Undefined
   | Defined (v : value).
 
@@ -50,7 +50,7 @@ Inductive type : Type :=
   | TMutBorrow
   | TBox.
 
-Inductive partal_type :=
+Inductive partial_type :=
   | PTDefined
   | PTPartalBox
   | PTUndefined.
@@ -98,21 +98,70 @@ Notation "'_' '!->' v" := (t_empty v)
 Notation "x '!->' v ';' m" := (t_update m x v)
                               (at level 100, v at next level, right associativity).
 
+
+(* locations are strings in this kind of map *)
+Definition store := total_map partial_value.
+
 Definition example_store :=
-  ( "x" !-> Int 1;
-    "y" !-> Int 2;
-    _ !-> Unit 
+  ( "x" !-> Defined (Int 1);
+    "p" !-> Defined (BorrowRef "x");
+    _ !-> Undefined 
   ).
 
-Definition store := total_map value.
 
-Fixpoint loc (st : store) (w : lval) : value :=
+
+Fixpoint loc (st : store) (w : lval) : string :=
   match w with 
-  | Deref w' => loc st w'
-  | Var str => st str
+  | Deref w' => match st (loc st w') with
+                | Defined val => match val with
+                                 | OwnRef s => s
+                                 | BorrowRef s => s
+                                 | _ => ""
+                                 end
+                | Undefined => ""%string
+                end
+  | Var str => str
   end.
 
 Compute loc example_store (Var "x"%string).
+Compute example_store (loc example_store (Var "x"%string)).
+Compute loc example_store (Var "p"%string).
+Compute example_store (loc example_store (Var "p"%string)).
+Compute loc example_store (Deref (Var "p"%string)).
+Compute example_store (loc example_store (Deref (Var "p"%string))).
+Compute example_store (loc example_store (Deref (Var "x"%string))).
+
+Fixpoint read (st : store) (w : lval) : partial_value :=
+  match w with 
+  | Var str => st str
+  | Deref _ => st (loc st w)
+  end.
+
+Check t_update.
+
+Compute read example_store (Var "x"%string).
+Compute read example_store (Var "p"%string).
+Compute read example_store (Deref (Var "p"%string)).
+Compute read example_store (Deref (Deref (Var "p"%string))).
+
+Fixpoint write (st : store) (w : lval) (v : partial_value) :=
+  match w with 
+  | Var str => t_update st str v
+  | Deref _ => t_update st (loc st w) v
+  end.
+
+Compute read example_store (Var "x"%string).
+Definition example_store' :=
+  write example_store (Var "x"%string) (Defined (Int 2)).
+Compute read example_store' (Var "x"%string).
+Definition example_store'' :=
+  write example_store (Deref (Var "p"%string)) (Defined (Int 3)).
+Compute read example_store'' (Var "x"%string).
+Definition example_store''' :=
+  write example_store (Deref (Var "x"%string)) (Defined (Int 4)).
+Compute read example_store''' (Var "x"%string).
+
+
 
 (* playgound *)
 
