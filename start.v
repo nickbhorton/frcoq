@@ -8,52 +8,53 @@ From Coq Require Import Strings.String.
 
 (* RF definitions *)
 Inductive lval : Type :=
-  | Var (x : string)
-  | Deref (w : lval).
+  | LVar (x : string)
+  | LDeref (w : lval).
 
 Inductive value : Type :=
-  | Unit
-  | Int (n : nat)
-  | OwnRef (s : string)
-  | BorrowRef (s : string).
+  | VUnit
+  | VInt (n : nat)
+  | VOwnRef (s : string)
+  | VBorrowRef (s : string).
 
 Inductive partial_value : Type :=
-  | Undefined
-  | Defined (v : value).
+  | PVUndefined
+  | PVDefined (v : value).
 
 Inductive term : Type :=
   (* t1 ; t2 *)
-  | Seq (t1 t2 : term)
+  | TSeq (t1 t2 : term)
   (* {t} *)
-  | Block (t : term)
+  | TBlock (t : term)
   (* let mut x = t *)
-  | Declaration (x : string) (t : term)
+  | TDeclaration (x : string) (t : term)
   (* w = t *)
-  | Assignment (w : lval) (t : term)
+  | TAssignment (w : lval) (t : term)
   (* box t *)
-  | HeapAlloc (t : term)
+  | THeapAlloc (t : term)
   (* &w *)
-  | Borrow (w : lval)
+  | TBorrow (w : lval)
   (* &mut w *)
-  | MutBorrow (w : lval)
+  | TMutBorrow (w : lval)
   (* w *)
-  | Move (w : lval)
+  | TMove (w : lval)
   (* w.copy() *)
-  | Copy (w : lval)
+  | TCopy (w : lval)
   (* v *)
-  | Value (v : value).
+  | TValue (v : value).
 
 Inductive type : Type :=
-  | TUnit
-  | TInt
-  | TBorrow
-  | TMutBorrow
-  | TBox.
+  | YUnit
+  | YInt
+  | YBorrow
+  | YMutBorrow
+  | YBox.
 
 Inductive partial_type :=
-  | PTDefined
-  | PTPartalBox
-  | PTUndefined.
+  | PYDefined
+  | PYPartalBox
+  | PYUndefined.
+
 
 
 (* notation for parsing *)
@@ -100,34 +101,71 @@ Notation "x '!->' v ';' m" := (t_update m x v)
 
 
 (* locations are strings in this kind of map *)
-Definition store := total_map partial_value.
+Definition lifetime := string.
+Definition location := string.
+
+(* 
+   store : locations -> (partial_value * lifetimes)
+   locations : string
+   lifetimes : string
+   locations and lifetimes maybe should not be raw strings
+ *)
+Definition store := total_map (partial_value * lifetime).
+
 
 Definition example_store :=
-  ( "x" !-> Defined (Int 1);
-    "p" !-> Defined (BorrowRef "x");
-    _ !-> Undefined 
+  ( "x" !-> (PVDefined (VInt 1),         "lifetime_l"%string);
+    "p" !-> (PVDefined (VBorrowRef "x"), "lifetime_m"%string);
+    "d" !-> (PVDefined (VBorrowRef "p"), "lifetime_f"%string);
+    _ !-> (PVUndefined, ""%string)
   ).
 
+(* SEMANTICS *)
 
+Inductive loc : store -> lval -> location -> Prop :=
+  | Loc_Var : forall (st : store) (var_loc : string), 
+      ~ (fst (st var_loc)) = PVUndefined ->
+      loc st (LVar var_loc) var_loc
+  | Loc_Deref : 
+      forall (st : store) (var_loc var_loc_interm : string) (w : lval),
+      loc st w var_loc_interm ->
+      loc st (LDeref w) var_loc.
 
-Fixpoint loc (st : store) (w : lval) : string :=
-  match w with 
-  | Deref w' => match st (loc st w') with
-                | Defined val => match val with
-                                 | OwnRef s => s
-                                 | BorrowRef s => s
-                                 | _ => ""
-                                 end
-                | Undefined => ""%string
-                end
-  | Var str => str
-  end.
+Example loc_ex1 : loc example_store (LVar "x"%string) "x"%string.
+Proof.
+  apply Loc_Var. simpl. unfold not. intros H. discriminate.
+Qed.
 
-Compute loc example_store (Var "x"%string).
-Compute example_store (loc example_store (Var "x"%string)).
-Compute loc example_store (Var "p"%string).
-Compute example_store (loc example_store (Var "p"%string)).
-Compute loc example_store (Deref (Var "p"%string)).
+Example loc_ex2 : loc example_store (LVar "p"%string) "t"%string.
+Proof.
+  (* we are stuck because t != p*)
+Abort.
+
+Example loc_ex3 : loc example_store (LVar "y"%string) "y"%string.
+Proof.
+  apply Loc_Var. simpl. 
+  (* we are stuck because there is no y in example_store *)
+Abort.
+
+Example loc_ex4 : loc example_store (LDeref (LVar "p"%string)) "x"%string.
+Proof.
+  apply Loc_Deref with (var_loc_interm := "p"%string). 
+  apply Loc_Var. simpl. unfold not. intros H. discriminate H.
+Qed.
+
+Example loc_ex5 : loc example_store (LDeref (LVar "d"%string)) "p"%string.
+Proof.
+  apply Loc_Deref with (var_loc_interm := "d"%string). 
+  apply Loc_Var. simpl. unfold not. intros H. discriminate H.
+Qed.
+
+Example loc_ex6 : loc example_store (LDeref (LDeref (LVar "d"%string))) "x"%string.
+Proof.
+  apply Loc_Deref with (var_loc_interm := "d"%string). 
+  apply Loc_Deref with (var_loc_interm := "p"%string). 
+  apply Loc_Var. simpl. unfold not. intros H. discriminate H.
+Qed.
+
 Compute example_store (loc example_store (Deref (Var "p"%string))).
 Compute example_store (loc example_store (Deref (Var "x"%string))).
 
