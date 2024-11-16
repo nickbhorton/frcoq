@@ -117,19 +117,47 @@ Definition example_store :=
   ( "x" !-> (PVDefined (VInt 1),         "lifetime_l"%string);
     "p" !-> (PVDefined (VBorrowRef "x"), "lifetime_m"%string);
     "d" !-> (PVDefined (VBorrowRef "p"), "lifetime_f"%string);
+    "t" !-> (PVDefined (VBorrowRef "d"), "lifetime_a"%string);
     _ !-> (PVUndefined, ""%string)
   ).
 
 (* SEMANTICS *)
 
+(*
+   loc {
+     "x" |-> <   1    >_{m},
+     "p" |-> <bref "x">_{n}
+   }, x = "x"
+
+   loc {
+     "x" |-> <   1    >_{m},
+     "p" |-> <bref "x">_{n}
+   }, *p = "x"
+
+   loc {
+     "x" |-> <   1    >_{m},
+     "p" |-> <bref "x">_{n}
+     "d" |-> <bref "p">_{n}
+   }, *d = "p"
+
+   loc {
+     "x" |-> <   1    >_{m},
+     "p" |-> <bref "x">_{n}
+     "d" |-> <bref "p">_{n}
+   }, **d = "x"
+*)
 Inductive loc : store -> lval -> location -> Prop :=
   | Loc_Var : forall (st : store) (var_loc : string), 
       ~ (fst (st var_loc)) = PVUndefined ->
       loc st (LVar var_loc) var_loc
   | Loc_Deref : 
-      forall (st : store) (var_loc var_loc_interm : string) (w : lval),
-      loc st w var_loc_interm ->
-      loc st (LDeref w) var_loc.
+      forall (st : store) (l lw: location) (w : lval),
+      (
+        fst (st lw) = PVDefined (VBorrowRef l) \/
+        fst (st lw) = PVDefined (VOwnRef l)
+      ) ->
+      loc st w lw ->
+      loc st (LDeref w) l.
 
 Example loc_ex1 : loc example_store (LVar "x"%string) "x"%string.
 Proof.
@@ -149,59 +177,157 @@ Abort.
 
 Example loc_ex4 : loc example_store (LDeref (LVar "p"%string)) "x"%string.
 Proof.
-  apply Loc_Deref with (var_loc_interm := "p"%string). 
-  apply Loc_Var. simpl. unfold not. intros H. discriminate H.
+  apply Loc_Deref with (lw := "p"%string). 
+  + simpl. left. reflexivity.
+  + apply Loc_Var. intros H. simpl in H. discriminate.
 Qed.
+
+Ltac loc_var := apply Loc_Var; unfold not; intros H; discriminate.
+Ltac loc_deref s := apply Loc_Deref with (lw := s); 
+  simpl; try (left; reflexivity); try (right; reflexivity); try (loc_var).
 
 Example loc_ex5 : loc example_store (LDeref (LVar "d"%string)) "p"%string.
 Proof.
-  apply Loc_Deref with (var_loc_interm := "d"%string). 
-  apply Loc_Var. simpl. unfold not. intros H. discriminate H.
+  loc_deref "d"%string.
 Qed.
 
 Example loc_ex6 : loc example_store (LDeref (LDeref (LVar "d"%string))) "x"%string.
 Proof.
-  apply Loc_Deref with (var_loc_interm := "d"%string). 
-  apply Loc_Deref with (var_loc_interm := "p"%string). 
-  apply Loc_Var. simpl. unfold not. intros H. discriminate H.
+  apply Loc_Deref with (lw := "p"%string). 
+  + simpl. left. reflexivity.
+  + apply Loc_Deref with (lw := "d"%string).
+    - simpl. left. reflexivity.
+    - apply Loc_Var. intros H. discriminate.
 Qed.
 
-Compute example_store (loc example_store (Deref (Var "p"%string))).
-Compute example_store (loc example_store (Deref (Var "x"%string))).
+Example loc_ex6' : loc example_store (LDeref (LDeref (LVar "d"%string))) "x"%string.
+Proof.
+  loc_deref "p"%string. loc_deref "d"%string.
+Qed.
 
-Fixpoint read (st : store) (w : lval) : partial_value :=
-  match w with 
-  | Var str => st str
-  | Deref _ => st (loc st w)
-  end.
+Example loc_ex7 : 
+  loc example_store (LDeref (LDeref (LDeref (LVar "t"%string)))) "x"%string.
+Proof.
+  loc_deref "p"%string. loc_deref "d"%string. loc_deref "t"%string.
+Qed.
 
-Check t_update.
+Example loc_ex8 : 
+  loc example_store (LDeref (LVar "x"%string)) "x"%string.
+Proof.
+loc_deref "x"%string. Abort. (* we are stuck because x is not a ref*)
 
-Compute read example_store (Var "x"%string).
-Compute read example_store (Var "p"%string).
-Compute read example_store (Deref (Var "p"%string)).
-Compute read example_store (Deref (Deref (Var "p"%string))).
+Inductive read: store -> lval -> partial_value -> Prop :=
+  | Read : forall (st : store) (w : lval) (pv : partial_value) (l : location), 
+      fst (st l) = pv ->
+      loc st w l ->
+      read st w pv.
 
-Fixpoint write (st : store) (w : lval) (v : partial_value) :=
-  match w with 
-  | Var str => t_update st str v
-  | Deref _ => t_update st (loc st w) v
-  end.
+Example read_ex1 :
+  read example_store (LVar "x"%string) (PVDefined (VInt 1)).
+Proof.
+  apply Read with (l := "x"%string). 
+  + simpl. reflexivity.
+  + loc_var.
+Qed.
 
-Compute read example_store (Var "x"%string).
-Definition example_store' :=
-  write example_store (Var "x"%string) (Defined (Int 2)).
-Compute read example_store' (Var "x"%string).
-Definition example_store'' :=
-  write example_store (Deref (Var "p"%string)) (Defined (Int 3)).
-Compute read example_store'' (Var "x"%string).
-Definition example_store''' :=
-  write example_store (Deref (Var "x"%string)) (Defined (Int 4)).
-Compute read example_store''' (Var "x"%string).
+Example read_ex2 :
+  read example_store (LVar "p"%string) (PVDefined (VBorrowRef "x"%string)).
+Proof.
+  apply Read with (l := "p"%string). 
+  + simpl. reflexivity.
+  + loc_var.
+Qed.
+
+Example read_ex3 :
+  read example_store (LDeref (LVar "p"%string)) (PVDefined (VInt 1)).
+Proof.
+  apply Read with (l := "x"%string).
+  + simpl. reflexivity.
+  + loc_deref "p"%string.
+Qed.
+
+Example read_ex4 :
+  read example_store (LDeref (LDeref (LVar "d"%string))) (PVDefined (VInt 1)).
+Proof.
+  apply Read with (l := "x"%string).
+  + simpl. reflexivity.
+  + loc_deref "p"%string. loc_deref "d"%string.
+Qed.
+
+Definition es_empty :=
+  ( _ !-> (PVUndefined, ""%string)).
+
+Example read_ex5 :
+  read es_empty (LVar "x"%string) PVUndefined.
+Proof. 
+  apply Read with (l := "x"%string).
+  + simpl. reflexivity.
+  + apply Loc_Var. intros H.
+  simpl in H. Abort .
+(* we are stuck because reads should not be about to return Undefined values*)
 
 
+(* 
+My first attempt at this in (loc st w l) was instead (loc st' w l) but apparently 
+for write to succed the location l has to already be alocated in st.
+*)
+Inductive write: store -> lval -> partial_value -> store -> Prop :=
+  | Write : forall (st st' : store) (pv : partial_value) (l : location) (w : lval),
+      fst (st' l) = pv ->
+      loc st w l ->
+      write st w pv st'.
 
-(* playgound *)
+
+Definition es_1 :=
+  ( "x" !-> (PVDefined (VInt 0),         "lifetime_l"%string);
+    _ !-> (PVUndefined, ""%string)
+  ).
+
+Definition es_1' :=
+  ( "x" !-> (PVDefined (VInt 1),         "lifetime_l"%string);
+    _ !-> (PVUndefined, ""%string)
+  ).
+
+Example write_ex1 :
+  write es_empty (LVar "x"%string) (PVDefined (VInt 0)) es_1.
+Proof.
+  apply Write with (l := "x"%string).
+  + simpl. reflexivity.
+  + apply Loc_Var. intros H. simpl in H. 
+  Abort.
+    (* this fails because x was not defined in st*)
+
+Example write_ex2 :
+  write es_1 (LVar "x"%string) (PVDefined (VInt 1)) es_1'.
+Proof.
+  apply Write with (l := "x"%string).
+  - simpl. reflexivity.
+  - loc_var.
+  Qed.
+
+
+Definition es_2 :=
+  ( 
+  "x" !-> (PVDefined (VInt 1),         "lifetime_l"%string);
+  "p" !-> (PVDefined (VBorrowRef "x"), "lifetime_g"%string);
+  _ !-> (PVUndefined, ""%string)
+  ).
+Definition es_3 :=
+  ( 
+  "x" !-> (PVDefined (VInt 2),         "lifetime_l"%string);
+  "p" !-> (PVDefined (VBorrowRef "x"), "lifetime_g"%string);
+  _ !-> (PVUndefined, ""%string)
+  ).
+
+Example write_ex3 :
+  write es_2 (LDeref (LVar "p"%string)) (PVDefined (VInt 2)) es_3.
+Proof.
+  apply Write with (l := "x"%string).
+  + simpl. reflexivity.
+  + loc_deref "p"%string.
+Qed.
+
+
 
 (* {1} *)
 Check Block (Value (Int 1)).
