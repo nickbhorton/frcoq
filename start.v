@@ -114,10 +114,10 @@ Definition store := total_map (partial_value * lifetime).
 
 
 Definition example_store :=
-  ( "x" !-> (PVDefined (VInt 1),         "lifetime_l"%string);
-    "p" !-> (PVDefined (VBorrowRef "x"), "lifetime_m"%string);
-    "d" !-> (PVDefined (VBorrowRef "p"), "lifetime_f"%string);
-    "t" !-> (PVDefined (VBorrowRef "d"), "lifetime_a"%string);
+  ( "x" !-> (PVDefined (VInt 1),         "l_l"%string);
+    "p" !-> (PVDefined (VBorrowRef "x"), "l_m"%string);
+    "d" !-> (PVDefined (VBorrowRef "p"), "l_f"%string);
+    "t" !-> (PVDefined (VBorrowRef "d"), "l_a"%string);
     _ !-> (PVUndefined, ""%string)
   ).
 
@@ -216,14 +216,14 @@ Example loc_ex8 :
 Proof.
 loc_deref "x"%string. Abort. (* we are stuck because x is not a ref*)
 
-Inductive read: store -> lval -> partial_value -> Prop :=
-  | Read : forall (st : store) (w : lval) (pv : partial_value) (l : location), 
-      fst (st l) = pv ->
+Inductive read: store -> lval -> partial_value * lifetime -> Prop :=
+  | Read : forall (st : store) (w : lval) (pv_l : partial_value * lifetime) (l : location), 
+      st l = pv_l ->
       loc st w l ->
-      read st w pv.
+      read st w pv_l.
 
 Example read_ex1 :
-  read example_store (LVar "x"%string) (PVDefined (VInt 1)).
+  read example_store (LVar "x"%string) ((PVDefined (VInt 1)), "l_l"%string).
 Proof.
   apply Read with (l := "x"%string). 
   + simpl. reflexivity.
@@ -231,7 +231,7 @@ Proof.
 Qed.
 
 Example read_ex2 :
-  read example_store (LVar "p"%string) (PVDefined (VBorrowRef "x"%string)).
+  read example_store (LVar "p"%string) ((PVDefined (VBorrowRef "x"%string)), "l_m"%string).
 Proof.
   apply Read with (l := "p"%string). 
   + simpl. reflexivity.
@@ -239,7 +239,7 @@ Proof.
 Qed.
 
 Example read_ex3 :
-  read example_store (LDeref (LVar "p"%string)) (PVDefined (VInt 1)).
+  read example_store (LDeref (LVar "p"%string)) ((PVDefined (VInt 1)), "l_l"%string).
 Proof.
   apply Read with (l := "x"%string).
   + simpl. reflexivity.
@@ -247,7 +247,7 @@ Proof.
 Qed.
 
 Example read_ex4 :
-  read example_store (LDeref (LDeref (LVar "d"%string))) (PVDefined (VInt 1)).
+  read example_store (LDeref (LDeref (LVar "d"%string))) ((PVDefined (VInt 1)), "l_l"%string).
 Proof.
   apply Read with (l := "x"%string).
   + simpl. reflexivity.
@@ -255,10 +255,10 @@ Proof.
 Qed.
 
 Definition es_empty :=
-  ( _ !-> (PVUndefined, ""%string)).
+  ( _ !-> (PVUndefined, "global"%string)).
 
 Example read_ex5 :
-  read es_empty (LVar "x"%string) PVUndefined.
+  read es_empty (LVar "x"%string) (PVUndefined, "global"%string).
 Proof. 
   apply Read with (l := "x"%string).
   + simpl. reflexivity.
@@ -280,12 +280,12 @@ Inductive write: store -> lval -> partial_value -> store -> Prop :=
 
 Definition es_1 :=
   ( "x" !-> (PVDefined (VInt 0),         "lifetime_l"%string);
-    _ !-> (PVUndefined, ""%string)
+    _ !-> (PVUndefined, "global"%string)
   ).
 
 Definition es_1' :=
   ( "x" !-> (PVDefined (VInt 1),         "lifetime_l"%string);
-    _ !-> (PVUndefined, ""%string)
+    _ !-> (PVUndefined, "global"%string)
   ).
 
 Example write_ex1 :
@@ -310,7 +310,7 @@ Definition es_2 :=
   ( 
   "x" !-> (PVDefined (VInt 1),         "lifetime_l"%string);
   "p" !-> (PVDefined (VBorrowRef "x"), "lifetime_g"%string);
-  _ !-> (PVUndefined, ""%string)
+  _ !-> (PVUndefined, "global"%string)
   ).
 Definition es_3 :=
   ( 
