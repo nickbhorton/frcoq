@@ -327,6 +327,25 @@ Proof.
   + loc_deref "p"%string.
 Qed.
 
+Reserved Notation " t '-->' t' " (at level 40).
+
+Inductive step : (term * store) -> (term * store) -> Prop :=
+| R_Copy : forall (w : lval) (v : value) (st : store),
+    read st w (PVDefined v) ->
+    (TCopy w, st) --> (TValue v, st)
+| R_Move : forall (w : lval) (v : value) (st1 st2 : store),
+    read st1 w (PVDefined v) ->
+    write st1 w PVUndefined st2 ->
+    (TMove w, st1) --> (TValue v, st2)
+| R_Borrow : forall (w : lval) (lw : location) (st : store),
+    loc st w lw ->
+    (TBorrow w, st) --> (TValue (VBorrowRef lw), st)
+| R_MutBorrow : forall (w : lval) (lw : location) (st : store),
+    loc st w lw ->
+    (TMutBorrow w, st) --> (TValue (VOwnRef lw), st)
+
+where " t '-->' t' " := (step t t').
+
 
 
 (* {1} *)
