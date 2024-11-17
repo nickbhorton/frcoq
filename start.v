@@ -57,30 +57,18 @@ Inductive partial_type :=
 
 
 
-(* notation for parsing *)
-(*
-Declare Custom Entry com.
-Declare Scope com_scope.
-
-Notation "<{ e }>" := e (e custom com at level 100) : com_scope.
-Notation "'e'" := (Value Unit) (in custom com at level 0) : com_scope.
-Notation "t1 ; t2" := (Seq t1 t2) (in custom com at level 0) : com_scope.
-Notation "x" := x (in custom com at level 0, x constr at level 0) : com_scope.
-Notation "'let' 'mut' x = t" := (Declaration x t) (
-  in custom com at level 0) : com_scope.
-Notation "{ t }" := (Block t) (in custom com at level 1) : com_scope.
-Open Scope com_scope.
-Unset Printing Notations.
-Check <{ let mut y = e }>.
-
-Unset Printing Notations.
-Set Printing Coercions.
-Print test_parser1.
-Set Printing Notations.
-Unset Printing Coercions.
-*)
-
 (* state *)
+
+(* locations are strings *)
+Definition location := string.
+Definition lifetime := string.
+Definition store' := list (location * (partial_value * lifetime)).
+
+Definition s_alloc (st : store') (l : location) (pv_l : partial_value * lifetime) 
+  : store' :=
+  cons (l, pv_l) st.
+
+Compute s_alloc nil "lx"%string (PVDefined VUnit, "l"%string).
 
 (* stuff for maps from Maps.v*)
 Definition total_map (A : Type) := string -> A.
@@ -100,9 +88,6 @@ Notation "x '!->' v ';' m" := (t_update m x v)
                               (at level 100, v at next level, right associativity).
 
 
-(* locations are strings in this kind of map *)
-Definition lifetime := string.
-Definition location := string.
 
 (* 
    store : locations -> (partial_value * lifetimes)
@@ -327,24 +312,41 @@ Proof.
   + loc_deref "p"%string.
 Qed.
 
-Reserved Notation " t '-->' t' " (at level 40).
 
-Inductive step : (term * store) -> (term * store) -> Prop :=
-| R_Copy : forall (w : lval) (v : value) (st : store),
-    read st w (PVDefined v) ->
-    (TCopy w, st) --> (TValue v, st)
-| R_Move : forall (w : lval) (v : value) (st1 st2 : store),
-    read st1 w (PVDefined v) ->
+(* IMPORTANT: To implement drop correctly I fear we may have to use a non function 
+   version of a store *)
+
+Fixpoint drop_locations (st : store) (l : list location) : store :=
+  match l with
+  | nil => st
+  | cons hd tl => t_update (drop_locations st tl) hd (PVUndefined, "global"%string)
+  end.
+
+
+Reserved Notation " t '-->' t' '|' l " (at level 40).
+
+Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
+| R_Copy : forall (w : lval) (v : value) (lf slf : lifetime) (st : store),
+    read st w (PVDefined v, lf) ->
+    (TCopy w, st) --> (TValue v, st) | slf
+| R_Move : forall (w : lval) (v : value) (lf slf : lifetime) (st1 st2 : store),
+    read st1 w (PVDefined v, lf) ->
     write st1 w PVUndefined st2 ->
-    (TMove w, st1) --> (TValue v, st2)
-| R_Borrow : forall (w : lval) (lw : location) (st : store),
+    (TMove w, st1) --> (TValue v, st2) | slf
+| R_Box : forall (v : value) (n : location) (slf : lifetime) (st1 st2 : store),
+    fst (st1 n) = PVUndefined ->
+    st2 = t_update st1 n (PVDefined v, "global"%string) ->
+    (THeapAlloc (TValue v), st1) --> (TValue (VOwnRef n), st2) | slf
+| R_Borrow : forall (w : lval) (lw : location) (slf : lifetime) (st : store),
     loc st w lw ->
-    (TBorrow w, st) --> (TValue (VBorrowRef lw), st)
-| R_MutBorrow : forall (w : lval) (lw : location) (st : store),
+    (TBorrow w, st) --> (TValue (VBorrowRef lw), st) | slf
+| R_MutBorrow : forall (w : lval) (lw : location) (slf : lifetime) (st : store),
     loc st w lw ->
-    (TMutBorrow w, st) --> (TValue (VOwnRef lw), st)
-
-where " t '-->' t' " := (step t t').
+    (TMutBorrow w, st) --> (TValue (VOwnRef lw), st) | slf
+| R_Declare : forall (v : value) (lx : location) (x : string) (slf : lifetime) (st1 st2 : store),
+    st2 = t_update st1 lx (PVDefined v, slf) ->
+    (TDeclaration x (TValue v), st1) --> (TValue VUnit, st2) | slf
+where " t '-->' t' '|' l " := (step l t t').
 
 
 
