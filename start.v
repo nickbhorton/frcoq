@@ -400,6 +400,14 @@ Proof.
 Qed.
 
 Example write_ex3' :
+  write (("x", (##, "m")):: nil) (LVar "x") #1 (("x", (#1, "m")) :: nil).
+Proof.
+  apply Write with (l := "x").
+  + simpl. reflexivity.
+  + auto_loc.
+Qed.
+
+Example write_ex3' :
   write es_2 (LDeref (LVar "p")) (#2) es_3.
 Proof.
   auto_write.
@@ -416,12 +424,6 @@ Fixpoint remove_location (st : store) (l : location) : store :=
   | (hd :: tl)%list => if (eqb l (fst hd)) 
       then remove_location tl l 
       else (hd :: remove_location tl l)%list
-  end.
-
-Fixpoint remove_locations (st : store) (l : list location) : store :=
-  match l with
-  | nil => st
-  | cons hd tl => remove_locations (remove_location st hd) tl
   end.
 
 Fixpoint collect_in_scope (st : store) (lf : lifetime) (lst : list location)
@@ -449,9 +451,9 @@ Inductive drop : store -> list partial_value -> store -> Prop :=
   | D_cons_own : forall (st1 st2 st3 : store)
       (tl : list partial_value) (l l_own : location),
       fst (s_get st1 l_own) = (# (VOwnRef l)) ->
-      st2 = remove_location st1 l_own ->
-      drop st2 (cons (fst (s_get st1 l)) tl) st3  ->
-      drop st1 (cons (# (VOwnRef l)) tl) st2.
+      st2 = s_update st1 l_own (##, "global") ->
+      drop st2 ((fst (s_get st1 l)) :: tl) st3  ->
+      drop st1 ((# (VOwnRef l)) :: tl) st2.
 
 Definition drop_ex1_st1 : store :=
     ("lx", (#1,"l")) ::
@@ -459,7 +461,8 @@ Definition drop_ex1_st1 : store :=
     nil.
 
 Definition drop_ex1_st2 : store :=
-    ("lx", ((#1),"l")) ::
+    ("lx", (#1,"l")) ::
+    ("lp", (##,"global")) ::
     nil.
 
 Example drop_ex1 : drop drop_ex1_st1 
@@ -908,19 +911,24 @@ Proof.
   apply R_Assign with (st2 := 
   ("z", (# (VOwnRef "2"), "m_lf")) ::
   ("2", (#0, "global")) ::
-  ("y", (# (VBorrowRef "z"), "l_lf")) ::
+  ("y", (##, "global")) ::
+  ("1", (#1, "global")) ::
   ("x", (#1, "l_lf"))
   :: nil) (pv1 := (# (VOwnRef "1"), "l_lf")).
   auto_read.
   - simpl. apply D_cons_own with (st3 :=
   ("z", (# (VOwnRef "2"), "m_lf")) ::
   ("2", (#0, "global")) ::
-  ("y", (# (VBorrowRef "z"), "l_lf")) ::
+  ("y", (##, "global")) ::
+  ("1", (#1, "global")) ::
   ("x", (#1, "l_lf"))
   :: nil
-  ) (l_own := "1").
+  ) (l_own := "y").
     + simpl. reflexivity.
     + simpl. reflexivity.
+    + simpl. apply D_cons_other.
+      * intros l H. discriminate.
+  - auto_write.
 .
   loc_var.
 Qed.
