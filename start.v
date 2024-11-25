@@ -72,20 +72,30 @@ Notation "'<{' p '}>' lf" := (TBlock p lf) (at level 91, right associativity).
 (* state *)
 Definition store := list (location * (partial_value * lifetime)).
 
-Definition s_alloc (st : store) (l : location) (pv_l : partial_value * lifetime) 
+Definition s_push (st : store) (l : location) (pv_l : partial_value * lifetime) 
   : store :=
   cons (l, pv_l) st.
 
+Fixpoint s_update (st : store) (l : location) (pv_l : partial_value * lifetime)
+  : store :=
+  match st with
+  | nil => st
+  | (current_l, current_pv_l) :: st' => if (current_l =? l) 
+      then (current_l, pv_l) :: st'
+      else (current_l, current_pv_l) :: (s_update st' l pv_l)
+  end.
 
-Fixpoint s_in (st :store) (l : location) 
+Fixpoint s_get (st :store) (l : location) 
   : partial_value * lifetime :=
   match st with
   | nil => (##, "global")
-  | ((cl, pv_l) :: tl)%list => if (eqb cl l) then pv_l else s_in tl l
+  | ((cl, pv_l) :: tl)%list => if (eqb cl l) then pv_l else s_get tl l
   end.
 
 
-Compute s_alloc nil "lx" (# VUnit, "l").
+Definition st_tester := s_push nil "lx" (#VUnit, "l").
+Compute s_update st_tester "lx" (#1, "l").
+Compute s_update st_tester "no_loc" (#1, "l").
 
 (* 
    store : locations -> (partial_value * lifetimes)
@@ -105,13 +115,13 @@ Definition example_store :=
 
 Inductive loc : store -> lval -> location -> Prop :=
   | Loc_Var : forall (st : store) (var_loc : string), 
-      ~ (fst (s_in st var_loc)) = ## ->
+      ~ (fst (s_get st var_loc)) = ## ->
       loc st (LVar var_loc) var_loc
   | Loc_Deref : 
       forall (st : store) (l lw: location) (w : lval),
       (
-        fst (s_in st lw) = # (VBorrowRef l) \/
-        fst (s_in st lw) = # (VOwnRef l)
+        fst (s_get st lw) = # (VBorrowRef l) \/
+        fst (s_get st lw) = # (VOwnRef l)
       ) ->
       loc st w lw ->
       loc st (LDeref w) l.
@@ -241,7 +251,7 @@ auto_loc. Abort. (* we are stuck because x is not a ref*)
 
 Inductive read: store -> lval -> partial_value * lifetime -> Prop :=
   | Read : forall (st : store) (w : lval) (pv_l : partial_value * lifetime) (l : location), 
-      s_in st l = pv_l ->
+      s_get st l = pv_l ->
       loc st w l ->
       read st w pv_l.
 
@@ -327,22 +337,30 @@ Proof.
 My first attempt at this in (loc st w l) was instead (loc st' w l) but apparently 
 for write to succed the location l has to already be alocated in st.
 *)
+
 Inductive write: store -> lval -> partial_value -> store -> Prop :=
   | Write : forall (st st' : store) (pv : partial_value) (l : location) (w : lval),
-      fst (s_in st' l) = pv ->
+      fst (s_get st' l) = pv ->
       loc st w l ->
       write st w pv st'.
 
+Ltac write_rule lv :=
+  apply Write with (l := lv); 
+    try (simpl; reflexivity);
+    try auto_loc.
+
+Ltac auto_write :=
+  match goal with 
+  | [ |- write ?st (LVar ?l) ?pv ?st' ] => write_rule l
+  | [ |- write ?st ?w ?pv ?st' ] => write_rule (deref_loc_repeat st w)
+  end.
+
 
 Definition es_1 :=
-  ( ("x", (#0,         "lifetime_l")) ::
-    nil
-  )%list.
+  ("x", (#0,         "lifetime_l")) ::
+    nil.
 
-Definition es_1' :=
-  ( ("x", (#1,         "lifetime_l")) ::
-    nil
-  )%list.
+Definition es_1' := s_update es_1 "x" (#1, "lifetime_l").
 
 Example write_ex1 :
   write nil (LVar "x") (#0) es_1.
@@ -359,21 +377,19 @@ Proof.
   apply Write with (l := "x").
   - simpl. reflexivity.
   - loc_var.
-  Qed.
+Qed.
+
+Example write_ex2' :
+  write es_1 (LVar "x") (#1) es_1'.
+Proof. auto_write. Qed.
 
 
 Definition es_2 :=
-  ( 
   ("x", (#1,         "lifetime_l")) ::
   ("p", (# (VBorrowRef "x"), "lifetime_g")) ::
-  nil
-  )%list.
-Definition es_3 :=
-  ( 
-  ("x", (#2,         "lifetime_l")) ::
-  ("p", (# (VBorrowRef "x"), "lifetime_g")) ::
-  nil
-  )%list.
+  nil.
+
+Definition es_3 := s_update es_2 "x" (#2, "lifetime_l").
 
 Example write_ex3 :
   write es_2 (LDeref (LVar "p")) (#2) es_3.
@@ -381,6 +397,12 @@ Proof.
   apply Write with (l := "x").
   + simpl. reflexivity.
   + loc_deref "p".
+Qed.
+
+Example write_ex3' :
+  write es_2 (LDeref (LVar "p")) (#2) es_3.
+Proof.
+  auto_write.
 Qed.
 
 
@@ -415,7 +437,7 @@ Fixpoint collect_pvs (st : store) (lst : list location) (pvs : list partial_valu
   : list partial_value :=
   match lst with 
   | nil => pvs
-  | (l :: tl)%list => collect_pvs st tl (fst (s_in st l) :: pvs)%list
+  | (l :: tl)%list => collect_pvs st tl (fst (s_get st l) :: pvs)%list
   end.
 
 Inductive drop : store -> list partial_value -> store -> Prop :=
@@ -426,23 +448,19 @@ Inductive drop : store -> list partial_value -> store -> Prop :=
       drop st (cons pv tl) st
   | D_cons_own : forall (st1 st2 st3 : store)
       (tl : list partial_value) (l l_own : location),
-      fst (s_in st1 l_own) = (# (VOwnRef l)) ->
+      fst (s_get st1 l_own) = (# (VOwnRef l)) ->
       st2 = remove_location st1 l_own ->
-      drop st2 (cons (fst (s_in st1 l)) tl) st3  ->
+      drop st2 (cons (fst (s_get st1 l)) tl) st3  ->
       drop st1 (cons (# (VOwnRef l)) tl) st2.
 
 Definition drop_ex1_st1 : store :=
-  (
-    ("lx", ((#1),"l")) ::
+    ("lx", (#1,"l")) ::
     ("lp", ((# (VOwnRef "lx")),"m")) ::
-    nil
-  )%list.
+    nil.
 
 Definition drop_ex1_st2 : store :=
-  (
     ("lx", ((#1),"l")) ::
-    nil
-  )%list.
+    nil.
 
 Example drop_ex1 : drop drop_ex1_st1 
   (collect_pvs drop_ex1_st1 ("lp" :: nil)%list nil) 
@@ -465,7 +483,7 @@ Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
     write st1 w ## st2 ->
     (TMove w, st1) --> (TValue v, st2) | slf
 | R_Box : forall (v : value) (n : location) (slf : lifetime) (st1 st2 : store),
-    fst (s_in st1 n) = ## ->
+    fst (s_get st1 n) = ## ->
     st2 = cons (n, (# v, "global")) st1 ->
     (THeapAlloc (TValue v), st1) --> (TValue (VOwnRef n), st2) | slf
 | R_Borrow : forall (w : lval) (lw : location) (slf : lifetime) (st : store),
