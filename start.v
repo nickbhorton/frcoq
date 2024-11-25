@@ -66,6 +66,8 @@ Coercion VInt : nat >-> value.
 Coercion LVar : string >-> lval.
 Notation "'#' v" := (PVDefined v) (at level 0).
 Notation "'##'" := (PVUndefined) (at level 0).
+Notation "s1 ; s2" := (TSeq s1 s2) (at level 90, right associativity).
+Notation "'<{' p '}>' lf" := (TBlock p lf) (at level 91, right associativity).
 
 (* state *)
 Definition store := list (location * (partial_value * lifetime)).
@@ -93,13 +95,11 @@ Compute s_alloc nil "lx" (# VUnit, "l").
  *)
 (* Definition store := total_map (partial_value * lifetime). *)
 
-Definition example_store := (
-  ("x", (#1 ,         "l_l")) ::
+Definition example_store :=
+  ("x", (#1, "l_l")) ::
   ("p", (# (VBorrowRef "x"), "l_m")) ::
   ("d", (# (VBorrowRef "p"), "l_f")) ::
-  ("t", (# (VBorrowRef "d"), "l_a")) ::
-    nil
-  )%list.
+  ("t", (# (VBorrowRef "d"), "l_a")) :: nil.
 
 (* SEMANTICS *)
 
@@ -526,28 +526,24 @@ Example r_sub1: (THeapAlloc (TCopy (LVar "y")),r_sub1_st) -->
 Proof.
     apply R_Sub_HeapAlloc.
     apply R_Copy with (lf := "l_lf").
-      + apply Read with (l := "y").
-    reflexivity.
-    loc_var.
+      + auto_read.
 Qed.
 
 Definition r_sub2_st  := ("y", (#1, "l_lf")) :: nil.
 Definition r_sub2_st' := ("y", (#2, "l_lf")) :: nil.
 Example r_sub2: 
-  (TSeq 
-    (TAssignment (LVar "y") (TValue 2)) 
+  (
+    (TAssignment (LVar "y") (TValue 2));
     (TAssignment (LVar "x") (TMove (LVar "y")))
   ,r_sub2_st) 
   --> 
-  (TSeq 
-    (TValue VUnit) 
+  (
+    (TValue VUnit);
     (TAssignment (LVar "x") (TMove (LVar "y")))
   ,r_sub2_st') | "l_lf".
 Proof.
   apply R_Sub_Seq. apply R_Assign with (st2 := r_sub2_st) (pv1 := (#1, "l_lf")).
-  + apply Read with (l := "y").
-    - simpl. reflexivity.
-    - loc_var.
+  + auto_read.
   + simpl. apply D_cons_other. intros l. intros H. injection H as H1. discriminate.
   + apply Write with (l := "y").
     - simpl. reflexivity.
@@ -558,62 +554,34 @@ Proof.
 
 Definition we1_1 : (term * store) :=
   (
-  TBlock (
-  TSeq 
-    (TDeclaration "x" (TValue 1))
-    (
-    TSeq
-      (TDeclaration "y" (THeapAlloc (TCopy (LVar "x"))))
-      (TBlock (
-      TSeq 
-        (TDeclaration "z" (THeapAlloc (TValue 0)))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-    )
-  ) "l_lf"
+  <{
+    (TDeclaration "x" (TValue 1));
+    (TDeclaration "y" (THeapAlloc (TCopy (LVar "x"))));
+    <{
+      (TDeclaration "z" (THeapAlloc (TValue 0)));
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   nil
   ).
 
 Definition we1_1_1 : (term * store) :=
   (
-  TBlock (
-  TSeq 
-    (TValue VUnit)
-    (
-    TSeq
-      (TDeclaration "y" (THeapAlloc (TCopy (LVar "x"))))
-      (TBlock (
-      TSeq 
-        (TDeclaration "z" (THeapAlloc (TValue 0)))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-    )
-  ) "l_lf"
+  <{
+    (TValue VUnit);
+    (TDeclaration "y" (THeapAlloc (TCopy (LVar "x"))));
+    <{
+      (TDeclaration "z" (THeapAlloc (TValue 0)));
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("x", (#1, "l_lf"))
   :: nil
@@ -628,27 +596,16 @@ Qed.
 
 Definition we1_1_2 : (term * store) :=
   (
-  TBlock (
-    TSeq
-      (TDeclaration "y" (THeapAlloc (TCopy (LVar "x"))))
-      (TBlock (
-      TSeq 
-        (TDeclaration "z" (THeapAlloc (TValue 0)))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    (TDeclaration "y" (THeapAlloc (TCopy (LVar "x"))));
+    <{
+      (TDeclaration "z" (THeapAlloc (TValue 0)));
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("x", (#1, "l_lf"))
   :: nil
@@ -665,27 +622,16 @@ Qed.
 
 Definition we1_1_3 : (term * store) :=
   (
-  TBlock (
-    TSeq
-      (TDeclaration "y" (THeapAlloc (TValue 1)))
-      (TBlock (
-      TSeq 
-        (TDeclaration "z" (THeapAlloc (TValue 0)))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    (TDeclaration "y" (THeapAlloc (TValue 1)));
+    <{
+      (TDeclaration "z" (THeapAlloc (TValue 0)));
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("x", (#1, "l_lf"))
   :: nil
@@ -698,34 +644,21 @@ Proof.
   apply R_Sub_Decl.
   apply R_Sub_HeapAlloc.
   apply R_Copy with (lf := "l_lf").
-  apply Read with (l := "x").
-  - simpl. reflexivity.
-  - loc_var.
+  auto_read.
 Qed.
 
 Definition we1_1_4 : (term * store) :=
   (
-  TBlock (
-    TSeq
-      (TDeclaration "y" (TValue (VOwnRef "1")))
-      (TBlock (
-      TSeq 
-        (TDeclaration "z" (THeapAlloc (TValue 0)))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    (TDeclaration "y" (TValue (VOwnRef "1")));
+    <{
+      (TDeclaration "z" (THeapAlloc (TValue 0)));
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("1", (#1, "global")) ::
   ("x", (#1, "l_lf"))
@@ -744,27 +677,16 @@ Qed.
 
 Definition we1_1_5 : (term * store) :=
   (
-  TBlock (
-    TSeq
+  <{
+    TValue VUnit;
+    <{
+      (TDeclaration "z" (THeapAlloc (TValue 0)));
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
       (TValue VUnit)
-      (TBlock (
-      TSeq 
-        (TDeclaration "z" (THeapAlloc (TValue 0)))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("y", (# (VOwnRef "1"), "l_lf")) ::
   ("1", (#1, "global")) ::
@@ -782,25 +704,15 @@ Qed.
 
 Definition we1_2 : (term * store) :=
   (
-  TBlock (
-      (TBlock (
-      TSeq 
-        (TDeclaration "z" (THeapAlloc (TValue 0)))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    <{
+      (TDeclaration "z" (THeapAlloc (TValue 0)));
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("y", (# (VOwnRef "1"), "l_lf")) ::
   ("1", (#1, "global")) ::
@@ -830,25 +742,15 @@ Qed.
 
 Definition we1_2_1 : (term * store) :=
   (
-  TBlock (
-      (TBlock (
-      TSeq 
-        (TDeclaration "z" (TValue (VOwnRef "2")))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    <{
+      (TDeclaration "z" (TValue (VOwnRef "2")));
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("2", (#0, "global")) ::
   ("y", (# (VOwnRef "1"), "l_lf")) ::
@@ -870,25 +772,15 @@ Qed.
 
 Definition we1_2_2 : (term * store) :=
   (
-  TBlock (
-      (TBlock (
-      TSeq 
-        (TValue VUnit)
-        (
-        TSeq
-          (TAssignment (LVar "y") (TBorrow (LVar "z")))
-          (
-          TSeq
-            (TAssignment (LVar "y") (TMove (LVar "z")))
-            (
-            TSeq
-              (TMove (LDeref (LVar "y")))
-              (TValue VUnit)
-            )
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    <{
+      TValue VUnit;
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
   ("2", (#0, "global")) ::
@@ -908,21 +800,14 @@ Qed.
 
 Definition we1_3 : (term * store) :=
   (
-  TBlock (
-      (TBlock (
-      TSeq
-        (TAssignment (LVar "y") (TBorrow (LVar "z")))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TMove (LVar "z")))
-          (
-          TSeq
-            (TMove (LDeref (LVar "y")))
-            (TValue VUnit)
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    <{
+      (TAssignment (LVar "y") (TBorrow (LVar "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
   ("2", (#0, "global")) ::
@@ -951,21 +836,14 @@ Qed.
 
 Definition we1_3_1 : (term * store) :=
   (
-  TBlock (
-      (TBlock (
-      TSeq
-        (TAssignment (LVar "y") (TValue (VBorrowRef "z")))
-        (
-        TSeq
-          (TAssignment (LVar "y") (TMove (LVar "z")))
-          (
-          TSeq
-            (TMove (LDeref (LVar "y")))
-            (TValue VUnit)
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    <{
+      (TAssignment (LVar "y") (TValue (VBorrowRef "z")));
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
   ("2", (#0, "global")) ::
@@ -987,21 +865,14 @@ Qed.
 
 Definition we1_3_2 : (term * store) :=
   (
-  TBlock (
-      (TBlock (
-      TSeq
-        (TValue VUnit)
-        (
-        TSeq
-          (TAssignment (LVar "y") (TMove (LVar "z")))
-          (
-          TSeq
-            (TMove (LDeref (LVar "y")))
-            (TValue VUnit)
-          )
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    <{
+      TValue VUnit;
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
   ("2", (#0, "global")) ::
@@ -1022,9 +893,7 @@ Proof.
   ("y", (# (VBorrowRef "z"), "l_lf")) ::
   ("x", (#1, "l_lf"))
   :: nil) (pv1 := (# (VOwnRef "1"), "l_lf")).
-  - apply Read with (l := "y").
-    + auto.
-    + loc_var.
+  auto_read.
   - simpl. apply D_cons_own with (st3 :=
   ("z", (# (VOwnRef "2"), "m_lf")) ::
   ("2", (#0, "global")) ::
@@ -1040,17 +909,13 @@ Qed.
 
 Definition we1_4 : (term * store) :=
   (
-  TBlock (
-      (TBlock (
-      TSeq
-        (TAssignment (LVar "y") (TMove (LVar "z")))
-        (
-        TSeq
-          (TMove (LDeref (LVar "y")))
-          (TValue VUnit)
-        )
-      ) "m_lf")
-  ) "l_lf"
+  <{
+    <{
+      (TAssignment (LVar "y") (TMove (LVar "z")));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
   ("2", (#0, "global")) ::
