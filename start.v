@@ -86,10 +86,17 @@ Fixpoint s_update (st : store) (l : location) (pv_l : partial_value * lifetime)
   end.
 
 Fixpoint s_get (st :store) (l : location) 
-  : partial_value * lifetime :=
+  : option (partial_value * lifetime) :=
   match st with
-  | nil => (##, "global")
-  | ((cl, pv_l) :: tl)%list => if (eqb cl l) then pv_l else s_get tl l
+  | nil => None
+  | ((cl, pv_l) :: tl)%list => if (eqb cl l) then Some pv_l else s_get tl l
+  end.
+
+Fixpoint s_get_unwrap (st :store) (l : location) 
+  : partial_value :=
+  match st with
+  | nil => ##
+  | ((cl, (pv,lf)) :: tl)%list => if (eqb cl l) then pv else s_get_unwrap tl l
   end.
 
 
@@ -115,20 +122,24 @@ Definition example_store :=
 
 Inductive loc : store -> lval -> location -> Prop :=
   | Loc_Var : forall (st : store) (var_loc : string), 
-      ~ (fst (s_get st var_loc)) = ## ->
+      (
+        exists (pvl : partial_value * lifetime),
+        s_get st var_loc = Some pvl
+      ) ->
       loc st (LVar var_loc) var_loc
   | Loc_Deref : 
-      forall (st : store) (l lw: location) (w : lval),
+      forall (st : store) (l lw: location) (w : lval) ,
       (
-        fst (s_get st lw) = # (VBorrowRef l) \/
-        fst (s_get st lw) = # (VOwnRef l)
+        exists (lf : lifetime), (
+        s_get st lw = Some (# (VBorrowRef l), lf) \/
+        s_get st lw = Some (# (VOwnRef l), lf))
       ) ->
       loc st w lw ->
       loc st (LDeref w) l.
 
-Ltac loc_var := apply Loc_Var; unfold not; intros H; discriminate.
+Ltac loc_var := apply Loc_Var; simpl; eauto.
 Ltac loc_deref s := apply Loc_Deref with (lw := s); 
-  simpl; try (left; reflexivity); try (right; reflexivity); try (loc_var).
+  simpl; try eauto; try (right; reflexivity); try (loc_var).
 
 Fixpoint find_loc (st : store) (s : string) : string :=
   match st with
@@ -171,7 +182,7 @@ Ltac auto_loc :=
 
 Example loc_ex1 : loc example_store (LVar "x") "x".
 Proof.
-  apply Loc_Var. simpl. unfold not. intros H. discriminate.
+  apply Loc_Var. simpl. eauto.
 Qed.
 
 Example loc_ex1' : loc example_store (LVar "x") "x".
@@ -193,8 +204,8 @@ Abort.
 Example loc_ex4 : loc example_store (LDeref (LVar "p")) "x".
 Proof.
   apply Loc_Deref with (lw := "p"). 
-  + simpl. left. reflexivity.
-  + apply Loc_Var. intros H. simpl in H. discriminate.
+  + simpl. eauto.
+  + apply Loc_Var. simpl. eauto.
 Qed.
 
 Example loc_ex4' : loc example_store (LDeref (LVar "p")) "x".
@@ -211,10 +222,10 @@ Qed.
 Example loc_ex6 : loc example_store (LDeref (LDeref (LVar "d"))) "x".
 Proof.
   apply Loc_Deref with (lw := "p"). 
-  + simpl. left. reflexivity.
+  + simpl. eauto.
   + apply Loc_Deref with (lw := "d").
-    - simpl. left. reflexivity.
-    - apply Loc_Var. intros H. discriminate.
+    - simpl. eauto.
+    - apply Loc_Var. simpl. eauto.
 Qed.
 
 Example loc_ex6' : loc example_store (LDeref (LDeref (LVar "d"))) "x".
@@ -244,16 +255,11 @@ Example loc_ex8 :
 Proof.
 loc_deref "x". Abort. (* we are stuck because x is not a ref*)
 
-Example loc_ex8 : 
-  loc example_store (LDeref (LVar "x")) "x".
-Proof.
-auto_loc. Abort. (* we are stuck because x is not a ref*)
-
 Inductive read: store -> lval -> partial_value * lifetime -> Prop :=
-  | Read : forall (st : store) (w : lval) (pv_l : partial_value * lifetime) (l : location), 
-      s_get st l = pv_l ->
+  | Read : forall (st : store) (w : lval) (pvl : partial_value * lifetime) (l : location), 
+      s_get st l = Some pvl ->
       loc st w l ->
-      read st w pv_l.
+      read st w pvl.
 
 Ltac read_rule s :=
       apply Read with (l := s);
@@ -327,9 +333,7 @@ Example read_ex5 :
   read nil "x" (##, "global").
 Proof. 
   apply Read with (l := "x").
-  + simpl. reflexivity.
-  + apply Loc_Var. intros H.
-  simpl in H. Abort .
+  + simpl. Abort.
 (* we are stuck because reads should not be about to return Undefined values*)
 
 
@@ -340,13 +344,13 @@ for write to succed the location l has to already be alocated in st.
 
 Inductive write: store -> lval -> partial_value -> store -> Prop :=
   | Write : forall (st st' : store) (pv : partial_value) (l : location) (w : lval),
-      fst (s_get st' l) = pv ->
+      (exists (lf : lifetime ), (s_get st' l = Some (pv, lf))) ->
       loc st w l ->
       write st w pv st'.
 
 Ltac write_rule lv :=
   apply Write with (l := lv); 
-    try (simpl; reflexivity);
+    try (simpl; eauto);
     try auto_loc.
 
 Ltac auto_write :=
@@ -366,8 +370,8 @@ Example write_ex1 :
   write nil (LVar "x") (#0) es_1.
 Proof.
   apply Write with (l := "x").
-  + simpl. reflexivity.
-  + apply Loc_Var. intros H. simpl in H. 
+  + simpl. eauto.
+  + apply Loc_Var. simpl.  
   Abort.
     (* this fails because x was not defined in st*)
 
@@ -375,7 +379,7 @@ Example write_ex2 :
   write es_1 (LVar "x") (#1) es_1'.
 Proof.
   apply Write with (l := "x").
-  - simpl. reflexivity.
+  - simpl. eauto.
   - loc_var.
 Qed.
 
@@ -395,7 +399,7 @@ Example write_ex3 :
   write es_2 (LDeref (LVar "p")) (#2) es_3.
 Proof.
   apply Write with (l := "x").
-  + simpl. reflexivity.
+  + simpl. eauto.
   + loc_deref "p".
 Qed.
 
@@ -403,11 +407,11 @@ Example write_ex3' :
   write (("x", (##, "m")):: nil) (LVar "x") #1 (("x", (#1, "m")) :: nil).
 Proof.
   apply Write with (l := "x").
-  + simpl. reflexivity.
+  + simpl. eauto.
   + auto_loc.
 Qed.
 
-Example write_ex3' :
+Example write_ex3'' :
   write es_2 (LDeref (LVar "p")) (#2) es_3.
 Proof.
   auto_write.
@@ -439,8 +443,16 @@ Fixpoint collect_pvs (st : store) (lst : list location) (pvs : list partial_valu
   : list partial_value :=
   match lst with 
   | nil => pvs
-  | (l :: tl)%list => collect_pvs st tl (fst (s_get st l) :: pvs)%list
+  | (l :: tl)%list =>  
+      match s_get st l with
+      | Some (pv, lf) => collect_pvs st tl (pv :: pvs)
+      | None => collect_pvs st tl pvs
+      end
   end.
+
+(*
+
+ ** this version is not working super well **
 
 Inductive drop : store -> list partial_value -> store -> Prop :=
   | D_nil : forall (st : store),
@@ -450,10 +462,42 @@ Inductive drop : store -> list partial_value -> store -> Prop :=
       drop st (cons pv tl) st
   | D_cons_own : forall (st1 st2 st3 : store)
       (tl : list partial_value) (l l_own : location),
-      fst (s_get st1 l_own) = (# (VOwnRef l)) ->
+      exists (lf : lifetime), s_get st1 l_own = Some (# (VOwnRef l), lf) ->
       st2 = s_update st1 l_own (##, "global") ->
       drop st2 ((fst (s_get st1 l)) :: tl) st3  ->
       drop st1 ((# (VOwnRef l)) :: tl) st2.
+*)
+
+Inductive drop : store -> list location -> store -> Prop :=
+  | D_nil : forall (st : store),
+      drop st nil st
+  | D_cons_other : forall (st1 st2 : store) (hd l : location) (tl : list location),
+      s_get_unwrap st1 hd <> # (VOwnRef l) ->
+      drop st1 tl st2 ->
+      drop st1 (cons hd tl) st2
+  | D_cons_own : forall (st1 st2 st3 : store)
+      (tl : list location) (hd l_in_ref : location),
+      st2 = s_update st1 hd (##, "global") ->
+      drop st2 (l_in_ref :: tl) st3  ->
+      s_get_unwrap st1 hd = # (VOwnRef l_in_ref) ->
+      drop st1 (cons hd tl) st3.
+
+Fixpoint get_l_in_own_ref (st : store) (l : location) : location :=
+  match s_get_unwrap st l with
+  | PVDefined (VOwnRef l_in_ref) => l_in_ref
+  | _ => ""
+  end.
+
+Ltac drop_trivial :=
+  match goal with
+  | [ |- drop ?st (?hd :: ?tl) ?st' ] => try apply D_cons_own with (st2 := st') 
+      (l_in_ref := get_l_in_own_ref st hd); simpl;
+      try (simpl; reflexivity); drop_trivial
+  | [ |- drop ?st1 (?hd :: ?tl) ?st2 ] => try apply D_cons_other with (l := hd);
+      try (simpl; intros H; discriminate); drop_trivial
+  | [ |- drop ?st1 nil ?st2 ] => apply D_nil
+  end.
+
 
 Definition drop_ex1_st1 : store :=
     ("lx", (#1,"l")) ::
@@ -466,12 +510,22 @@ Definition drop_ex1_st2 : store :=
     nil.
 
 Example drop_ex1 : drop drop_ex1_st1 
-  (collect_pvs drop_ex1_st1 ("lp" :: nil)%list nil) 
+  ("lp" :: nil) 
   drop_ex1_st2.
-Proof. simpl. apply D_cons_own with (st3 := drop_ex1_st2) (l_own := "lp").
-+ reflexivity.
-+ reflexivity.
-+ simpl. apply D_cons_other. unfold not. intros l H. injection H as H1. discriminate.
+Proof. 
+  apply D_cons_own with (st2 := drop_ex1_st2) (l_in_ref := "lx").
+  + simpl. reflexivity.
+  + apply D_cons_other with (l := "lx").
+    - simpl. intros H. discriminate.
+    - apply D_nil.
+  + simpl. reflexivity.
+Qed.
+
+Example drop_ex1' : drop drop_ex1_st1 
+  ("lp" :: nil) 
+  drop_ex1_st2.
+Proof. 
+  drop_trivial.
 Qed.
 
 
@@ -486,7 +540,7 @@ Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
     write st1 w ## st2 ->
     (TMove w, st1) --> (TValue v, st2) | slf
 | R_Box : forall (v : value) (n : location) (slf : lifetime) (st1 st2 : store),
-    fst (s_get st1 n) = ## ->
+    s_get st1 n = None ->
     st2 = cons (n, (# v, "global")) st1 ->
     (THeapAlloc (TValue v), st1) --> (TValue (VOwnRef n), st2) | slf
 | R_Borrow : forall (w : lval) (lw : location) (slf : lifetime) (st : store),
@@ -498,20 +552,23 @@ Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
 | R_Assign : forall (st1 st2 st3 : store) 
     (w : lval) (v2 : value) (pv1 : partial_value * lifetime) (slf : lifetime),
     read st1 w pv1 ->
-    drop st1 (fst pv1 :: nil)%list st2 ->
+    (exists (lw : location), loc st1 w lw /\ drop st1 (lw :: nil) st2) ->
     write st2 w (# v2) st3 ->
     (TAssignment w (TValue v2), st1) --> (TValue VUnit, st3) | slf
 | R_Declare : forall (v : value) (lx : location) (x : string) (slf : lifetime) (st1 st2 : store),
     st2 = cons (lx, (# v, slf)) st1 ->
     (TDeclaration x (TValue v), st1) --> (TValue VUnit, st2) | slf
 | R_Seq : forall (st1 st2 : store) (v : value) (t : term) (slf : lifetime),
-    drop st1 (# v :: nil)%list st2 ->
+    (exists (lv : location) (vlf : lifetime),
+    s_get st1 lv = Some (# v, vlf) /\ drop st1 (lv :: nil) st2) ->
     (TSeq (TValue v) t, st1) --> (t, st2) | slf
+| R_SeqUnit : forall (st : store) (t : term) (slf : lifetime),
+    (TSeq (TValue VUnit) t, st) --> (t, st) | slf
 | R_BlockA : forall (st1 st2 : store) (l_lf m_lf : lifetime) (t1 t2 : term),
     (t1, st1) --> (t2, st2) | m_lf ->
     (TBlock t1 m_lf, st1) --> (TBlock t2 m_lf, st2) | l_lf
 | R_BlockB : forall (st1 st2 : store) (l_lf m_lf : lifetime) (v : value),
-    drop st1 (collect_pvs st1 (collect_in_scope st1 m_lf nil) nil) st2 ->
+    drop st1 (collect_in_scope st1 m_lf nil) st2 ->
     (TBlock (TValue v) m_lf, st1) --> (TValue v, st2) | l_lf
 | R_Sub_HeapAlloc : forall (st1 st2 : store) (l_lf : lifetime) (t1 t2 : term),
     (t1,st1) --> (t2,st2) | l_lf ->
@@ -565,10 +622,10 @@ Example r_sub2:
 Proof.
   apply R_Sub_Seq. apply R_Assign with (st2 := r_sub2_st) (pv1 := (#1, "l_lf")).
   + auto_read.
-  + simpl. apply D_cons_other. intros l. intros H. injection H as H1. discriminate.
-  + apply Write with (l := "y").
-    - simpl. reflexivity.
-    - loc_var.
+  + exists "y". split.
+    - auto_loc.
+    - drop_trivial.
+  + auto_write.
   Qed.
 
 (* worked example 1 *)
@@ -635,10 +692,7 @@ Definition we1_1_2 : (term * store) :=
 Example we1_step1_2 : we1_1_1 --> we1_1_2 | "l_lf".
 Proof.
   apply R_BlockA.
-  apply R_Seq.
-  apply D_cons_other.
-  intros l. intros H.
-  discriminate.
+  apply R_SeqUnit. 
 Qed.
 
 Definition we1_1_3 : (term * store) :=
@@ -744,10 +798,7 @@ Definition we1_2 : (term * store) :=
 Example we1_step1_6 : we1_1_5 --> we1_2 | "l_lf".
 Proof.
   apply R_BlockA.
-  apply R_Seq.
-  apply D_cons_other.
-  intros l H.
-  discriminate.
+  apply R_SeqUnit.
 Qed.
 
 Example we1_step1 : we1_1 -->* we1_2 | "l_lf".
@@ -842,9 +893,7 @@ Example we1_step2_3 : we1_2_2 --> we1_3 | "l_lf".
 Proof.
   apply R_BlockA.
   apply R_BlockA.
-  apply R_Seq.
-  apply D_cons_other.
-  intros l H; discriminate.
+  apply R_SeqUnit.
 Qed.
 
 Example we1_step2 : we1_2 -->* we1_3 | "l_lf".
@@ -915,23 +964,13 @@ Proof.
   ("1", (#1, "global")) ::
   ("x", (#1, "l_lf"))
   :: nil) (pv1 := (# (VOwnRef "1"), "l_lf")).
-  auto_read.
-  - simpl. apply D_cons_own with (st3 :=
-  ("z", (# (VOwnRef "2"), "m_lf")) ::
-  ("2", (#0, "global")) ::
-  ("y", (##, "global")) ::
-  ("1", (#1, "global")) ::
-  ("x", (#1, "l_lf"))
-  :: nil
-  ) (l_own := "y").
-    + simpl. reflexivity.
-    + simpl. reflexivity.
-    + simpl. apply D_cons_other.
-      * intros l H. discriminate.
+  - auto_read.
+  - exists "y". split.
+    + auto_loc.
+    + drop_trivial.
   - auto_write.
-.
-  loc_var.
 Qed.
+
 
 Definition we1_4 : (term * store) :=
   (
@@ -950,3 +989,152 @@ Definition we1_4 : (term * store) :=
   ("x", (#1, "l_lf"))
   :: nil
   ).
+
+Example we1_step3_3 : we1_3_2 --> we1_4 | "l_lf".
+Proof.
+  apply R_BlockA.
+  apply R_BlockA.
+  apply R_SeqUnit.
+Qed.
+
+Definition we1_4_1 : (term * store) :=
+  (
+  <{
+    <{
+      TAssignment (LVar "y") (TValue (VOwnRef "2"));
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
+  ,
+  ("z", (##, "global")) ::
+  ("2", (#0, "global")) ::
+  ("y", (# (VBorrowRef "z"), "l_lf")) ::
+  ("1", (#1, "global")) ::
+  ("x", (#1, "l_lf"))
+  :: nil
+  ).
+
+Example we1_step4_1 : we1_4 --> we1_4_1 | "l_lf".
+Proof.
+  apply R_BlockA.
+  apply R_BlockA.
+  apply R_Sub_Seq.
+  apply R_Sub_Asg.
+  apply R_Move with (lf := "m_lf").
+  - auto_read.
+  - auto_write.
+Qed.
+
+Definition we1_4_2 : (term * store) :=
+  (
+  <{
+    <{
+      TValue VUnit;
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
+  ,
+  ("z", (##, "global")) ::
+  ("2", (#0, "global")) ::
+  ("y", (# (VOwnRef "2"), "l_lf")) ::
+  ("1", (#1, "global")) ::
+  ("x", (#1, "l_lf"))
+  :: nil
+  ).
+
+Example we1_step4_2 : we1_4_1 --> we1_4_2 | "l_lf".
+Proof.
+  apply R_BlockA.
+  apply R_BlockA.
+  apply R_Sub_Seq.
+  apply R_Assign with (st2 :=
+  ("z", (##, "global")) ::
+  ("2", (#0, "global")) ::
+  ("y", (#(VBorrowRef "z"), "l_lf")) ::
+  ("1", (#1, "global")) ::
+  ("x", (#1, "l_lf"))
+  :: nil
+  ) (pv1 := (# (VBorrowRef "z"), "l_lf")).
+  - auto_read.
+  - exists "y". split.
+    + auto_loc.
+    + drop_trivial.
+  - auto_write.
+Qed.
+
+Definition we1_5 : (term * store) :=
+  (
+  <{
+    <{
+      (TMove (LDeref (LVar "y")));
+      (TValue VUnit)
+    }> "m_lf"
+  }> "l_lf"
+  ,
+  ("z", (##, "global")) ::
+  ("2", (#0, "global")) ::
+  ("y", (# (VOwnRef "2"), "l_lf")) ::
+  ("1", (#1, "global")) ::
+  ("x", (#1, "l_lf"))
+  :: nil
+  ).
+
+Example we_step5 : we1_4_2 --> we1_5 | "l_lf".
+Proof.
+  apply R_BlockA.
+  apply R_BlockA.
+  apply R_SeqUnit.
+Qed.
+
+Definition we1_6 : (term * store) :=
+  (
+  <{
+    <{
+      TValue 0;
+      TValue VUnit
+    }> "m_lf"
+  }> "l_lf"
+  ,
+  ("z", (##, "global")) ::
+  ("2", (##, "global")) ::
+  ("y", (# (VOwnRef "2"), "l_lf")) ::
+  ("1", (#1, "global")) ::
+  ("x", (#1, "l_lf"))
+  :: nil
+  ).
+
+Example we_step6 : we1_5 --> we1_6 | "l_lf".
+Proof.
+  apply R_BlockA.
+  apply R_BlockA.
+  apply R_Sub_Seq.
+  apply R_Move with (lf := "global").
+  - auto_read.
+  - auto_write.
+Qed.
+
+Definition we1_7 : (term * store) :=
+  (
+  <{
+    <{
+      TValue VUnit
+    }> "m_lf"
+  }> "l_lf"
+  ,
+  ("z", (##, "global")) ::
+  ("2", (##, "global")) ::
+  ("y", (# (VOwnRef "2"), "l_lf")) ::
+  ("1", (#1, "global")) ::
+  ("x", (#1, "l_lf"))
+  :: nil
+  ).
+
+Example we_step7 : we1_6 --> we1_7 | "l_lf".
+Proof.
+  apply R_BlockA.
+  apply R_BlockA.
+  apply R_Seq.
+  exists
+Qed.
