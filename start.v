@@ -5,8 +5,8 @@ From Coq Require Import Arith.Arith.
 From Coq Require Import Arith.EqNat. Import Nat.
 From Coq Require Import Strings.String.
 
-Open Scope list.
 Open Scope string.
+Open Scope list.
 
 (* locations are strings *)
 Definition location := string.
@@ -37,7 +37,7 @@ Inductive term : Type :=
   (* w = t *)
   | TAssignment (w : lval) (t : term)
   (* box t *)
-  | THeapAlloc (t : term)
+  | TBox (t : term)
   (* &w *)
   | TBorrow (w : lval)
   (* &mut w *)
@@ -49,28 +49,22 @@ Inductive term : Type :=
   (* v *)
   | TValue (v : value).
 
-Inductive type : Type :=
-  | YUnit
-  | YInt
-  | YBorrow
-  | YMutBorrow
-  | YBox.
-
-Inductive partial_type :=
-  | PYDefined
-  | PYPartalBox
-  | PYUndefined.
-
-
 Coercion VInt : nat >-> value.
 Coercion LVar : string >-> lval.
+Coercion TValue : value >-> term.
 Notation "'#' v" := (PVDefined v) (at level 0).
 Notation "'##'" := (PVUndefined) (at level 0).
 Notation "s1 ; s2" := (TSeq s1 s2) (at level 90, right associativity).
 Notation "'<{' p '}>' lf" := (TBlock p lf) (at level 91, right associativity).
+Notation "'Ɛ'" := (TValue VUnit) (at level 80).
+
 
 (* state *)
 Definition store := list (location * (partial_value * lifetime)).
+
+Notation "lx '|->' '[' pv ']' lf" := ((lx, (pv,lf))) (at level 70).
+
+
 
 Definition s_push (st : store) (l : location) (pv_l : partial_value * lifetime) 
   : store :=
@@ -91,6 +85,7 @@ Fixpoint s_get (st :store) (l : location)
   | nil => None
   | ((cl, pv_l) :: tl)%list => if (eqb cl l) then Some pv_l else s_get tl l
   end.
+
 
 Fixpoint s_get_unwrap (st :store) (l : location) 
   : partial_value :=
@@ -149,15 +144,16 @@ Fixpoint s_remove_l (st : store) (l : location) : store :=
    store : locations -> (partial_value * lifetimes)
    locations : string
    lifetimes : string
-   locations and lifetimes maybe should not be raw strings
- *)
-(* Definition store := total_map (partial_value * lifetime). *)
+   lf_order : list string
+*)
+
 
 Definition example_store :=
-  ("x", (#1, "l_l")) ::
-  ("p", (# (VBorrowRef "x"), "l_m")) ::
-  ("d", (# (VBorrowRef "p"), "l_f")) ::
-  ("t", (# (VBorrowRef "d"), "l_a")) :: nil.
+  ("x" |-> [#1]"l_l") ::
+  ("p" |-> [# (VBorrowRef "x")]"l_m") ::
+  ("d" |-> [# (VBorrowRef "p")]"l_f") ::
+  ("t" |-> [# (VBorrowRef "d")]"l_a") ::
+  nil.
 
 Definition example_store' :=
   ("x", (#1, "l_l")) ::
@@ -166,7 +162,6 @@ Definition example_store' :=
   ("t", (# (VBorrowRef "d"), "l_a")) :: nil.
 
 Compute s_eq example_store example_store'.
-
 
 (* SEMANTICS *)
 
@@ -221,6 +216,9 @@ Fixpoint deref_loc_repeat (st : store) (w : lval) : string :=
   | LDeref o => deref_loc st (deref_loc_repeat st o)
   end.
 
+Print example_store.
+Compute deref_loc_repeat (example_store) (LDeref "d").
+
 
 Ltac auto_loc :=
   repeat match goal with
@@ -230,28 +228,28 @@ Ltac auto_loc :=
   end.
 
 
-Example loc_ex1 : loc example_store (LVar "x") "x".
+Example loc_ex1 : loc example_store "x" "x".
 Proof.
   apply Loc_Var. simpl. eauto.
 Qed.
 
-Example loc_ex1' : loc example_store (LVar "x") "x".
+Example loc_ex1' : loc example_store "x" "x".
 Proof.
   auto_loc.
 Qed.
 
-Example loc_ex2 : loc example_store (LVar "p") "t".
+Example loc_ex2 : loc example_store "p" "t".
 Proof.
   (* we are stuck because t != p*)
 Abort.
 
-Example loc_ex3 : loc example_store (LVar "y") "y".
+Example loc_ex3 : loc example_store "y" "y".
 Proof.
   apply Loc_Var. simpl. 
   (* we are stuck because there is no y in example_store *)
 Abort.
 
-Example loc_ex4 : loc example_store (LDeref (LVar "p")) "x".
+Example loc_ex4 : loc example_store (LDeref "p") "x".
 Proof.
   apply Loc_Deref with (lw := "p"). 
   + simpl. eauto.
@@ -564,7 +562,11 @@ Proof.
 Qed.
 
 
-Reserved Notation " t '-->' t' '|' l " (at level 40).
+(* lifetime soundness setupt *)
+Definition lf_ordering := list string.
+Definition lfo_empty := "global" :: nil. 
+
+Reserved Notation " t '-->' t' '|' l" (at level 40).
 
 Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
 | R_Copy : forall (w : lval) (v : value) (lf slf : lifetime) (st : store),
@@ -577,7 +579,7 @@ Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
 | R_Box : forall (v : value) (n : location) (slf : lifetime) (st1 st2 : store),
     s_get st1 n = None ->
     ((s_eq st2 (cons (n, (# v, "global")) st1)) = true) ->
-    (THeapAlloc (TValue v), st1) --> (TValue (VOwnRef n), st2) | slf
+    (TBox (TValue v), st1) --> (TValue (VOwnRef n), st2) | slf
 | R_Borrow : forall (w : lval) (lw : location) (slf : lifetime) (st : store),
     loc st w lw ->
     (TBorrow w, st) --> (TValue (VBorrowRef lw), st) | slf
@@ -589,10 +591,11 @@ Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
     (exists (pv1 : partial_value) (lf : lifetime), 
     read st1 w (pv1, lf) /\ drop st1 (pv1 :: nil) st2) ->
     write st2 w (# v2) st3 ->
-    (TAssignment w (TValue v2), st1) --> (TValue VUnit, st3) | slf
-| R_Declare : forall (v : value) (lx : location) (x : string) (slf : lifetime) (st1 st2 : store),
+    (TAssignment w (TValue v2), st1) --> (Ɛ, st3) | slf
+| R_Declare : forall (v : value) 
+    (lx : location) (x : string) (slf : lifetime) (st1 st2 : store),
     (s_eq st2 (cons (lx, (# v, slf)) st1) = true) ->
-    (TDeclaration x (TValue v), st1) --> (TValue VUnit, st2) | slf
+    (TDeclaration x (TValue v), st1) --> (Ɛ, st2) | slf
 | R_Seq : forall (st1 st2 : store) (v : value) (t : term) (slf : lifetime),
     drop st1 (# v :: nil) st2 ->
     (TSeq (TValue v) t, st1) --> (t, st2) | slf
@@ -602,39 +605,41 @@ Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
 | R_BlockB : forall (st1 st2 : store) (l_lf m_lf : lifetime) (v : value),
     drop st1 (to_own_refs (collect_in_scope st1 m_lf nil) nil) st2 ->
     (TBlock (TValue v) m_lf, st1) --> (TValue v, st2) | l_lf
-| R_Sub_HeapAlloc : forall (st1 st2 : store) (l_lf : lifetime) (t1 t2 : term),
+| R_Sub_Box : forall (st1 st2 : store) (l_lf : lifetime) (t1 t2 : term),
     (t1,st1) --> (t2,st2) | l_lf ->
-    (THeapAlloc t1, st1) --> (THeapAlloc t2, st2) | l_lf
+    (TBox t1, st1) --> (TBox t2, st2) | l_lf
 | R_Sub_Seq : forall (st1 st2 : store) (l_lf : lifetime) (t1 t2 t3 : term),
     (t1,st1) --> (t2,st2) | l_lf ->
     (TSeq t1 t3, st1) --> (TSeq t2 t3, st2) | l_lf
-| R_Sub_Asg : forall (st1 st2 : store) (l_lf : lifetime) (t1 t2 : term) (w : lval),
+| R_Sub_Asg : forall (st1 st2 : store) 
+    (l_lf : lifetime) (t1 t2 : term) (w : lval),
     (t1,st1) --> (t2,st2) | l_lf ->
     (TAssignment w t1, st1) --> (TAssignment w t2, st2) | l_lf
-| R_Sub_Decl : forall (st1 st2 : store) (l_lf : lifetime) (t1 t2 : term) (x : string),
+| R_Sub_Decl : forall (st1 st2 : store) 
+    (l_lf : lifetime) (t1 t2 : term) (x : string),
     (t1,st1) --> (t2,st2) | l_lf ->
     (TDeclaration x t1, st1) --> (TDeclaration x t2, st2) | l_lf
-where " t '-->' t' '|' l " := (step l t t').
+where " t '-->' t' '|' l" := (step l t t').
 
 Check step.
 
 Inductive multi : Prop -> Prop :=
-  | multi_refl : forall (ts : term * store) (lf : lifetime),
+  | multi_refl : forall (ts : term * store) (lf : lifetime) ,
       multi (ts --> ts | lf)
   | multi_step : forall (ts1 ts2 ts3 : term * store) (lf : lifetime),
       (ts1 --> ts2 | lf) ->
       multi (ts2 --> ts3 | lf) ->
       multi (ts1 --> ts3 | lf).
 
-Notation " t '-->*' t' | lf" := (multi (t --> t' | lf)) (at level 40).
+Notation " t '-->*' t' '|' lf" := (multi (t --> t' | lf)) (at level 40).
 
 (* figuring out R_Sub *)
 
 Definition r_sub1_st := ("y", (#1, "l_lf")) :: nil.
-Example r_sub1: (THeapAlloc (TCopy (LVar "y")),r_sub1_st) -->
-  (THeapAlloc (TValue 1) ,r_sub1_st) | "l_lf".
+Example r_sub1: (TBox (TCopy (LVar "y")),r_sub1_st) -->
+  (TBox (TValue 1) ,r_sub1_st) | "l_lf".
 Proof.
-    apply R_Sub_HeapAlloc.
+    apply R_Sub_Box.
     apply R_Copy with (lf := "l_lf").
       + auto_read.
 Qed.
@@ -648,7 +653,7 @@ Example r_sub2:
   ,r_sub2_st) 
   --> 
   (
-    (TValue VUnit);
+    (Ɛ);
     (TAssignment (LVar "x") (TMove (LVar "y")))
   ,r_sub2_st') | "l_lf".
 Proof.
@@ -664,14 +669,14 @@ Proof.
 Definition we1_1 : (term * store) :=
   (
   <{
-    TDeclaration "x" (TValue 1);
-    TDeclaration "y" (THeapAlloc (TCopy (LVar "x")));
+    TDeclaration "x" 1;
+    TDeclaration "y" (TBox (TCopy "x"));
     <{
-      TDeclaration "z" (THeapAlloc (TValue 0));
-      TAssignment (LVar "y") (TBorrow (LVar "z"));
-      TAssignment (LVar "y") (TMove (LVar "z"));
-      TMove (LDeref (LVar "y"));
-      TValue VUnit
+      TDeclaration "z" (TBox 0);
+      TAssignment "y" (TBorrow "z");
+      TAssignment "y" (TMove "z");
+      TMove (LDeref "y");
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -681,14 +686,14 @@ Definition we1_1 : (term * store) :=
 Definition we1_1_1 : (term * store) :=
   (
   <{
-    TValue VUnit;
-    TDeclaration "y" (THeapAlloc (TCopy (LVar "x")));
+    Ɛ;
+    TDeclaration "y" (TBox (TCopy (LVar "x")));
     <{
-      TDeclaration "z" (THeapAlloc (TValue 0));
+      TDeclaration "z" (TBox (TValue 0));
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -706,13 +711,13 @@ Qed.
 Definition we1_1_2 : (term * store) :=
   (
   <{
-    TDeclaration "y" (THeapAlloc (TCopy (LVar "x")));
+    TDeclaration "y" (TBox (TCopy (LVar "x")));
     <{
-      TDeclaration "z" (THeapAlloc (TValue 0));
+      TDeclaration "z" (TBox (TValue 0));
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -721,7 +726,7 @@ Definition we1_1_2 : (term * store) :=
   ).
 
 Lemma sequence_unit: forall (st : store) (t : term) (lf : lifetime), 
-  (TValue VUnit;
+  (Ɛ;
   t, st)
   -->
   (t, st) | lf.
@@ -729,8 +734,6 @@ Proof.
   intros st t lf.
   apply R_Seq. drop_trivial.
 Qed.
-
-
 
 Example we1_step1_2 : we1_1_1 --> we1_1_2 | "l_lf".
 Proof.
@@ -741,13 +744,13 @@ Qed.
 Definition we1_1_3 : (term * store) :=
   (
   <{
-    TDeclaration "y" (THeapAlloc (TValue 1));
+    TDeclaration "y" (TBox (TValue 1));
     <{
-      TDeclaration "z" (THeapAlloc (TValue 0));
+      TDeclaration "z" (TBox (TValue 0));
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -760,7 +763,7 @@ Proof.
   apply R_BlockA.
   apply R_Sub_Seq.
   apply R_Sub_Decl.
-  apply R_Sub_HeapAlloc.
+  apply R_Sub_Box.
   apply R_Copy with (lf := "l_lf").
   auto_read.
 Qed.
@@ -770,11 +773,11 @@ Definition we1_1_4 : (term * store) :=
   <{
     TDeclaration "y" (TValue (VOwnRef "1"));
     <{
-      TDeclaration "z" (THeapAlloc (TValue 0));
+      TDeclaration "z" (TBox (TValue 0));
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -796,13 +799,13 @@ Qed.
 Definition we1_1_5 : (term * store) :=
   (
   <{
-    TValue VUnit;
+    Ɛ;
     <{
-      TDeclaration "z" (THeapAlloc (TValue 0));
+      TDeclaration "z" (TBox (TValue 0));
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -824,11 +827,11 @@ Definition we1_2 : (term * store) :=
   (
   <{
     <{
-      TDeclaration "z" (THeapAlloc (TValue 0));
+      TDeclaration "z" (TBox (TValue 0));
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -863,7 +866,7 @@ Definition we1_2_1 : (term * store) :=
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -889,11 +892,11 @@ Definition we1_2_2 : (term * store) :=
   (
   <{
     <{
-      TValue VUnit;
+      Ɛ;
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -920,7 +923,7 @@ Definition we1_3 : (term * store) :=
       TAssignment (LVar "y") (TBorrow (LVar "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -954,7 +957,7 @@ Definition we1_3_1 : (term * store) :=
       TAssignment (LVar "y") (TValue (VBorrowRef "z"));
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -980,10 +983,10 @@ Definition we1_3_2 : (term * store) :=
   (
   <{
     <{
-      TValue VUnit;
+      Ɛ;
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -1037,7 +1040,7 @@ Definition we1_4 : (term * store) :=
     <{
       TAssignment (LVar "y") (TMove (LVar "z"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -1064,7 +1067,7 @@ Definition we1_4_1 : (term * store) :=
     <{
       TAssignment (LVar "y") (TValue (VOwnRef "2"));
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -1091,9 +1094,9 @@ Definition we1_4_2 : (term * store) :=
   (
   <{
     <{
-      TValue VUnit;
-      TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ;
+      TMove (LDeref "y");
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -1129,18 +1132,13 @@ Definition we1_5 : (term * store) :=
   <{
     <{
       TMove (LDeref (LVar "y"));
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
-  (* there is no z shown in step 7 in paper *)
   ("z", (##, "global")) ::
-
   ("2", (#0, "global")) ::
-
-  (* there is no 1 in step 7 in the paper *)
   ("y", (# (VOwnRef "2"), "l_lf")) ::
-
   ("1", (##, "global")) ::
   ("x", (#1, "l_lf"))
   :: nil
@@ -1158,7 +1156,7 @@ Definition we1_6 : (term * store) :=
   <{
     <{
       TValue 0;
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -1184,7 +1182,7 @@ Definition we1_7 : (term * store) :=
   (
   <{
     <{
-      TValue VUnit
+      Ɛ
     }> "m_lf"
   }> "l_lf"
   ,
@@ -1207,7 +1205,7 @@ Qed.
 Definition we1_8 : (term * store) :=
   (
   <{
-      TValue VUnit
+      Ɛ
   }> "l_lf"
   ,
   ("z", (##, "global")) ::
@@ -1227,7 +1225,7 @@ Qed.
 
 Definition we1_9 : (term * store) :=
   (
-      TValue VUnit
+      Ɛ
   ,
   ("z", (##, "global")) ::
   ("2", (##, "global")) ::
@@ -1243,4 +1241,3 @@ Proof.
   simpl. 
   drop_trivial.
 Qed.
-
