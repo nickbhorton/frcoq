@@ -64,8 +64,6 @@ Definition store := list (location * (partial_value * lifetime)).
 
 Notation "lx '|->' '[' pv ']' lf" := ((lx, (pv,lf))) (at level 70).
 
-
-
 Definition s_push (st : store) (l : location) (pv_l : partial_value * lifetime) 
   : store :=
   cons (l, pv_l) st.
@@ -146,7 +144,6 @@ Fixpoint s_remove_l (st : store) (l : location) : store :=
    lifetimes : string
    lf_order : list string
 *)
-
 
 Definition example_store :=
   ("x" |-> [#1]"l_l") ::
@@ -378,7 +375,7 @@ Qed.
 
 
 Example read_ex5 :
-  read nil "x" (##, "global").
+  read nil "x" (##, "*").
 Proof. 
   apply Read with (l := "x").
   + simpl. Abort.
@@ -530,7 +527,7 @@ Definition drop_ex1_st1 : store :=
     nil.
 
 Definition drop_ex1_st2 : store :=
-    ("lx", (##,"global")) ::
+    ("lx", (##,"*")) ::
     ("lp", (# (VOwnRef "lx"),"m")) ::
     nil.
 
@@ -563,70 +560,115 @@ Qed.
 
 
 (* lifetime soundness setupt *)
-Definition lf_ordering := list string.
-Definition lfo_empty := "global" :: nil. 
+Definition lf_order:= list string.
+
+Fixpoint lfo_contains (lfo : lf_order) (lf : lifetime) : bool :=
+  match lfo with
+  | nil => false
+  | hd :: tl => if (lf =? hd) then true else lfo_contains tl lf
+  end.
+
+Fixpoint lfo_lt (lfo : lf_order) (lf1 lf2 : lifetime) : bool :=
+  match lfo with
+  | nil => false
+  | lf :: lfo' => if (lf =? lf1) then lfo_contains lfo' lf2
+      else (if (lf =? lf2) then false else lfo_lt lfo' lf1 lf2)
+  end.
+
+Definition test_lfo := "m" :: "l" :: "p" :: "q" :: nil.
+
+Compute lfo_lt test_lfo "m" "l".
+Compute lfo_lt test_lfo "m" "p".
+Compute lfo_lt test_lfo "m" "q".
+Compute lfo_lt test_lfo "l" "p".
+Compute lfo_lt test_lfo "l" "q".
+Compute lfo_lt test_lfo "p" "q".
+
+Compute lfo_lt test_lfo "l" "m".
+
+Fixpoint fully_defined (lst : list partial_value) : bool :=
+  match lst with
+  | nil => true
+  | pv :: tl => match pv with
+                | PVUndefined => false
+                | _ => fully_defined tl
+                end
+  end.
+
+Definition sound_order (st : store) (lfo : lf_order) : bool :=
+  match lfo with 
+  | nil => true
+  | lf :: nil => true
+  | lf :: "*" :: tl => true
+  | lf1 :: lf2 :: tl => fully_defined (collect_pvs st (collect_in_scope st lf2 nil) nil)
+  end.
 
 Reserved Notation " t '-->' t' '|' l" (at level 40).
 
-Inductive step : lifetime -> (term * store) -> (term * store) -> Prop :=
-| R_Copy : forall (w : lval) (v : value) (lf slf : lifetime) (st : store),
+Inductive step : lifetime -> (term * store * lf_order) -> (term * store * lf_order) -> Prop :=
+| R_Copy : forall (lfo : lf_order) (w : lval) (v : value) (lf slf : lifetime) (st : store),
     read st w (# v, lf) ->
-    (TCopy w, st) --> (TValue v, st) | slf
-| R_Move : forall (w : lval) (v : value) (lf slf : lifetime) (st1 st2 : store),
+    (TCopy w, st, lfo) --> (TValue v, st, lfo) | slf
+| R_Move : forall (lfo : lf_order) (w : lval) (v : value) (lf slf : lifetime) (st1 st2 : store),
     read st1 w (# v, lf) ->
     write st1 w ## st2 ->
-    (TMove w, st1) --> (TValue v, st2) | slf
-| R_Box : forall (v : value) (n : location) (slf : lifetime) (st1 st2 : store),
+    (TMove w, st1, lfo) --> (TValue v, st2, lfo) | slf
+| R_Box : forall (lfo : lf_order) (v : value) (n : location) (slf : lifetime) (st1 st2 : store),
     s_get st1 n = None ->
-    ((s_eq st2 (cons (n, (# v, "global")) st1)) = true) ->
-    (TBox (TValue v), st1) --> (TValue (VOwnRef n), st2) | slf
-| R_Borrow : forall (w : lval) (lw : location) (slf : lifetime) (st : store),
+    ((s_eq st2 (cons (n, (# v, "*")) st1)) = true) ->
+    (TBox (TValue v), st1, lfo) --> (TValue (VOwnRef n), st2, lfo) | slf
+| R_Borrow : forall (lfo : lf_order) (w : lval) (lw : location) (slf : lifetime) (st : store),
     loc st w lw ->
-    (TBorrow w, st) --> (TValue (VBorrowRef lw), st) | slf
-| R_MutBorrow : forall (w : lval) (lw : location) (slf : lifetime) (st : store),
+    (TBorrow w, st, lfo) --> (TValue (VBorrowRef lw), st, lfo) | slf
+| R_MutBorrow : forall (lfo : lf_order) (w : lval) (lw : location) (slf : lifetime) (st : store),
     loc st w lw ->
-    (TMutBorrow w, st) --> (TValue (VOwnRef lw), st) | slf
-| R_Assign : forall (st1 st2 st3 : store) 
+    (TMutBorrow w, st, lfo) --> (TValue (VOwnRef lw), st, lfo) | slf
+| R_Assign : forall (lfo : lf_order) (st1 st2 st3 : store) 
     (w : lval) (v2 : value) (slf : lifetime),
     (exists (pv1 : partial_value) (lf : lifetime), 
     read st1 w (pv1, lf) /\ drop st1 (pv1 :: nil) st2) ->
     write st2 w (# v2) st3 ->
-    (TAssignment w (TValue v2), st1) --> (Ɛ, st3) | slf
-| R_Declare : forall (v : value) 
+    (TAssignment w (TValue v2), st1, lfo) --> (Ɛ, st3, lfo) | slf
+| R_Declare : forall (lfo : lf_order) (v : value) 
     (lx : location) (x : string) (slf : lifetime) (st1 st2 : store),
     (s_eq st2 (cons (lx, (# v, slf)) st1) = true) ->
-    (TDeclaration x (TValue v), st1) --> (Ɛ, st2) | slf
-| R_Seq : forall (st1 st2 : store) (v : value) (t : term) (slf : lifetime),
+    (TDeclaration x (TValue v), st1, lfo) --> (Ɛ, st2, lfo) | slf
+| R_Seq : forall (lfo : lf_order) (st1 st2 : store) (v : value) (t : term) (slf : lifetime),
     drop st1 (# v :: nil) st2 ->
-    (TSeq (TValue v) t, st1) --> (t, st2) | slf
-| R_BlockA : forall (st1 st2 : store) (l_lf m_lf : lifetime) (t1 t2 : term),
-    (t1, st1) --> (t2, st2) | m_lf ->
-    (TBlock t1 m_lf, st1) --> (TBlock t2 m_lf, st2) | l_lf
-| R_BlockB : forall (st1 st2 : store) (l_lf m_lf : lifetime) (v : value),
+    (TSeq (TValue v) t, st1, lfo) --> (t, st2, lfo) | slf
+| R_BlockA : forall (lfo : lf_order) (st1 st2 : store) (l_lf m_lf : lifetime) (t1 t2 : term),
+    (t1, st1, m_lf :: lfo) --> (t2, st2, m_lf :: lfo) | m_lf ->
+    (TBlock t1 m_lf, st1, lfo) --> (TBlock t2 m_lf, st2, lfo) | l_lf
+| R_BlockB : forall (lfo : lf_order) (st1 st2 : store) (l_lf m_lf : lifetime) (v : value),
     drop st1 (to_own_refs (collect_in_scope st1 m_lf nil) nil) st2 ->
-    (TBlock (TValue v) m_lf, st1) --> (TValue v, st2) | l_lf
-| R_Sub_Box : forall (st1 st2 : store) (l_lf : lifetime) (t1 t2 : term),
-    (t1,st1) --> (t2,st2) | l_lf ->
-    (TBox t1, st1) --> (TBox t2, st2) | l_lf
-| R_Sub_Seq : forall (st1 st2 : store) (l_lf : lifetime) (t1 t2 t3 : term),
-    (t1,st1) --> (t2,st2) | l_lf ->
-    (TSeq t1 t3, st1) --> (TSeq t2 t3, st2) | l_lf
-| R_Sub_Asg : forall (st1 st2 : store) 
+    (TBlock (TValue v) m_lf, st1, lfo) --> (TValue v, st2, lfo) | l_lf
+| R_Sub_Box : forall (lfo : lf_order) (st1 st2 : store) (l_lf : lifetime) (t1 t2 : term),
+    (t1,st1, lfo) --> (t2,st2, lfo) | l_lf ->
+    (TBox t1, st1, lfo) --> (TBox t2, st2, lfo) | l_lf
+| R_Sub_Seq : forall (lfo : lf_order) (st1 st2 : store) (l_lf : lifetime) (t1 t2 t3 : term),
+    (t1,st1, lfo) --> (t2,st2, lfo) | l_lf ->
+    (TSeq t1 t3, st1, lfo) --> (TSeq t2 t3, st2, lfo) | l_lf
+| R_Sub_Asg : forall (lfo : lf_order) (st1 st2 : store) 
     (l_lf : lifetime) (t1 t2 : term) (w : lval),
-    (t1,st1) --> (t2,st2) | l_lf ->
-    (TAssignment w t1, st1) --> (TAssignment w t2, st2) | l_lf
-| R_Sub_Decl : forall (st1 st2 : store) 
+    (t1,st1, lfo) --> (t2,st2, lfo) | l_lf ->
+    (TAssignment w t1, st1, lfo) --> (TAssignment w t2, st2, lfo) | l_lf
+| R_Sub_Decl : forall (lfo : lf_order) (st1 st2 : store) 
     (l_lf : lifetime) (t1 t2 : term) (x : string),
-    (t1,st1) --> (t2,st2) | l_lf ->
-    (TDeclaration x t1, st1) --> (TDeclaration x t2, st2) | l_lf
+    (t1,st1, lfo) --> (t2,st2, lfo) | l_lf ->
+    (TDeclaration x t1, st1, lfo) --> (TDeclaration x t2, st2, lfo) | l_lf
 where " t '-->' t' '|' l" := (step l t t').
 
-Check step.
+Theorem lifetime_soundness:
+  forall (st st' : store) (t t' : term) (lfo : lf_order) (l : lifetime),
+  sound_order st lfo ->
+  sound_order st' lfo ->
+  (t, st, lfo) --> (t', st', lfo) | l.
+ENDHERE
 
 Inductive multi : Prop -> Prop :=
-  | multi_refl : forall (ts : term * store) (lf : lifetime) ,
+  | multi_refl : forall (ts : term * store * lf_order) (lf : lifetime) ,
       multi (ts --> ts | lf)
-  | multi_step : forall (ts1 ts2 ts3 : term * store) (lf : lifetime),
+  | multi_step : forall (ts1 ts2 ts3 : term * store * lf_order) (lf : lifetime),
       (ts1 --> ts2 | lf) ->
       multi (ts2 --> ts3 | lf) ->
       multi (ts1 --> ts3 | lf).
@@ -636,8 +678,8 @@ Notation " t '-->*' t' '|' lf" := (multi (t --> t' | lf)) (at level 40).
 (* figuring out R_Sub *)
 
 Definition r_sub1_st := ("y", (#1, "l_lf")) :: nil.
-Example r_sub1: (TBox (TCopy (LVar "y")),r_sub1_st) -->
-  (TBox (TValue 1) ,r_sub1_st) | "l_lf".
+Example r_sub1: (TBox (TCopy (LVar "y")),r_sub1_st, nil) -->
+  (TBox (TValue 1) ,r_sub1_st, nil) | "l_lf".
 Proof.
     apply R_Sub_Box.
     apply R_Copy with (lf := "l_lf").
@@ -650,12 +692,12 @@ Example r_sub2:
   (
     (TAssignment (LVar "y") (TValue 2));
     (TAssignment (LVar "x") (TMove (LVar "y")))
-  ,r_sub2_st) 
+  ,r_sub2_st, nil) 
   --> 
   (
     (Ɛ);
     (TAssignment (LVar "x") (TMove (LVar "y")))
-  ,r_sub2_st') | "l_lf".
+  ,r_sub2_st', nil) | "l_lf".
 Proof.
   apply R_Sub_Seq. apply R_Assign with (st2 := r_sub2_st).
   + exists #1. exists "l_lf". split.
@@ -666,7 +708,7 @@ Proof.
 
 (* worked example 1 *)
 
-Definition we1_1 : (term * store) :=
+  Definition we1_1 : (term * store * lf_order) :=
   (
   <{
     TDeclaration "x" 1;
@@ -681,9 +723,11 @@ Definition we1_1 : (term * store) :=
   }> "l_lf"
   ,
   nil
+  ,
+  "*" :: nil
   ).
 
-Definition we1_1_1 : (term * store) :=
+  Definition we1_1_1 : (term * store * lf_order) :=
   (
   <{
     Ɛ;
@@ -699,6 +743,8 @@ Definition we1_1_1 : (term * store) :=
   ,
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step1_1 : we1_1 --> we1_1_1 | "l_lf".
@@ -708,7 +754,7 @@ Proof.
     reflexivity.
 Qed.
 
-Definition we1_1_2 : (term * store) :=
+Definition we1_1_2 : (term * store * lf_order) :=
   (
   <{
     TDeclaration "y" (TBox (TCopy (LVar "x")));
@@ -723,15 +769,17 @@ Definition we1_1_2 : (term * store) :=
   ,
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
-Lemma sequence_unit: forall (st : store) (t : term) (lf : lifetime), 
+Lemma sequence_unit: forall (lfo : lf_order) (st : store) (t : term) (lf : lifetime), 
   (Ɛ;
-  t, st)
+  t, st, lfo)
   -->
-  (t, st) | lf.
+  (t, st, lfo) | lf.
 Proof.
-  intros st t lf.
+  intros st t lf lfo.
   apply R_Seq. drop_trivial.
 Qed.
 
@@ -741,7 +789,7 @@ Proof.
   apply sequence_unit. 
 Qed.
 
-Definition we1_1_3 : (term * store) :=
+Definition we1_1_3 : (term * store * lf_order) :=
   (
   <{
     TDeclaration "y" (TBox (TValue 1));
@@ -756,6 +804,8 @@ Definition we1_1_3 : (term * store) :=
   ,
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step1_3 : we1_1_2 --> we1_1_3 | "l_lf".
@@ -768,7 +818,7 @@ Proof.
   auto_read.
 Qed.
 
-Definition we1_1_4 : (term * store) :=
+Definition we1_1_4 : (term * store * lf_order) :=
   (
   <{
     TDeclaration "y" (TValue (VOwnRef "1"));
@@ -781,9 +831,11 @@ Definition we1_1_4 : (term * store) :=
     }> "m_lf"
   }> "l_lf"
   ,
-  ("1", (#1, "global")) ::
+  ("1", (#1, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step1_4 : we1_1_3 --> we1_1_4 | "l_lf".
@@ -796,7 +848,7 @@ Proof.
   - auto.
 Qed.
 
-Definition we1_1_5 : (term * store) :=
+Definition we1_1_5 : (term * store * lf_order) :=
   (
   <{
     Ɛ;
@@ -810,9 +862,11 @@ Definition we1_1_5 : (term * store) :=
   }> "l_lf"
   ,
   ("y", (# (VOwnRef "1"), "l_lf")) ::
-  ("1", (#1, "global")) ::
+  ("1", (#1, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step1_5 : we1_1_4 --> we1_1_5 | "l_lf".
@@ -823,7 +877,7 @@ Proof.
   auto.
 Qed.
 
-Definition we1_2 : (term * store) :=
+Definition we1_2 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -836,9 +890,11 @@ Definition we1_2 : (term * store) :=
   }> "l_lf"
   ,
   ("y", (# (VOwnRef "1"), "l_lf")) ::
-  ("1", (#1, "global")) ::
+  ("1", (#1, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step1_6 : we1_1_5 --> we1_2 | "l_lf".
@@ -858,7 +914,7 @@ Proof.
   apply multi_refl.
 Qed.
 
-Definition we1_2_1 : (term * store) :=
+Definition we1_2_1 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -870,11 +926,13 @@ Definition we1_2_1 : (term * store) :=
     }> "m_lf"
   }> "l_lf"
   ,
-  ("2", (#0, "global")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VOwnRef "1"), "l_lf")) ::
-  ("1", (#1, "global")) ::
+  ("1", (#1, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step2_1 : we1_2 --> we1_2_1 | "l_lf".
@@ -888,7 +946,14 @@ Proof.
   - auto.
 Qed.
 
-Definition we1_2_2 : (term * store) :=
+Compute sound_order (
+  ("2", (#0, "*")) ::
+  ("y", (# (VOwnRef "1"), "l_lf")) ::
+  ("1", (#1, "*")) ::
+  ("x", (#1, "l_lf"))
+  :: nil) ("m_lf" :: "l_lf" :: "*" :: nil).
+
+Definition we1_2_2 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -901,11 +966,13 @@ Definition we1_2_2 : (term * store) :=
   }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
-  ("2", (#0, "global")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VOwnRef "1"), "l_lf")) ::
-  ("1", (#1, "global")) ::
+  ("1", (#1, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step2_2 : we1_2_1 --> we1_2_2 | "l_lf".
@@ -916,7 +983,7 @@ Proof.
   apply R_Declare with (lx := "z"). auto.
 Qed.
 
-Definition we1_3 : (term * store) :=
+Definition we1_3 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -928,11 +995,13 @@ Definition we1_3 : (term * store) :=
   }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
-  ("2", (#0, "global")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VOwnRef "1"), "l_lf")) ::
-  ("1", (#1, "global")) ::
+  ("1", (#1, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step2_3 : we1_2_2 --> we1_3 | "l_lf".
@@ -950,7 +1019,7 @@ Proof.
   apply multi_refl.
 Qed.
 
-Definition we1_3_1 : (term * store) :=
+Definition we1_3_1 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -962,11 +1031,13 @@ Definition we1_3_1 : (term * store) :=
   }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
-  ("2", (#0, "global")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VOwnRef "1"), "l_lf")) ::
-  ("1", (#1, "global")) ::
+  ("1", (#1, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step3_1 : we1_3 --> we1_3_1 | "l_lf".
@@ -979,7 +1050,7 @@ Proof.
   loc_var.
 Qed.
 
-Definition we1_3_2 : (term * store) :=
+Definition we1_3_2 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -991,11 +1062,13 @@ Definition we1_3_2 : (term * store) :=
   }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
-  ("2", (#0, "global")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VBorrowRef "z"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step3_2 : we1_3_1 --> we1_3_2 | "l_lf".
@@ -1005,9 +1078,9 @@ Proof.
   apply R_Sub_Seq.
   apply R_Assign with (st2 :=
   ("z", (# (VOwnRef "2"), "m_lf")) ::
-  ("2", (#0, "global")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VBorrowRef "z"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
   ).
@@ -1015,17 +1088,17 @@ Proof.
     + auto_read.
     + apply D_cons_own with (st2 := 
         ("z", (# (VOwnRef "2"), "m_lf")) ::
-        ("2", (#0, "global")) ::
+        ("2", (#0, "*")) ::
         ("y", (# (VBorrowRef "z"), "l_lf")) ::
-        ("1", (##, "global")) ::
+        ("1", (##, "*")) ::
         ("x", (#1, "l_lf"))
         :: nil).
         * simpl. reflexivity.
         * simpl. apply D_cons_other with (st2 := 
         ("z", (# (VOwnRef "2"), "m_lf")) ::
-        ("2", (#0, "global")) ::
+        ("2", (#0, "*")) ::
         ("y", (# (VBorrowRef "z"), "l_lf")) ::
-        ("1", (##, "global")) ::
+        ("1", (##, "*")) ::
         ("x", (#1, "l_lf"))
         :: nil).
         { apply D_nil. }
@@ -1034,7 +1107,7 @@ Proof.
 Qed.
 
 
-Definition we1_4 : (term * store) :=
+Definition we1_4 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -1045,11 +1118,13 @@ Definition we1_4 : (term * store) :=
   }> "l_lf"
   ,
   ("z", (# (VOwnRef "2"), "m_lf")) ::
-  ("2", (#0, "global")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VBorrowRef "z"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step3_3 : we1_3_2 --> we1_4 | "l_lf".
@@ -1061,7 +1136,7 @@ Qed.
 
 (* correct here *)
 
-Definition we1_4_1 : (term * store) :=
+Definition we1_4_1 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -1071,12 +1146,14 @@ Definition we1_4_1 : (term * store) :=
     }> "m_lf"
   }> "l_lf"
   ,
-  ("z", (##, "global")) ::
-  ("2", (#0, "global")) ::
+  ("z", (##, "*")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VBorrowRef "z"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step4_1 : we1_4 --> we1_4_1 | "l_lf".
@@ -1090,7 +1167,7 @@ Proof.
   - auto_write.
 Qed.
 
-Definition we1_4_2 : (term * store) :=
+Definition we1_4_2 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -1100,12 +1177,14 @@ Definition we1_4_2 : (term * store) :=
     }> "m_lf"
   }> "l_lf"
   ,
-  ("z", (##, "global")) ::
-  ("2", (#0, "global")) ::
+  ("z", (##, "*")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VOwnRef "2"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we1_step4_2 : we1_4_1 --> we1_4_2 | "l_lf".
@@ -1114,10 +1193,10 @@ Proof.
   apply R_BlockA.
   apply R_Sub_Seq.
   apply R_Assign with (st2 :=
-  ("z", (##, "global")) ::
-  ("2", (#0, "global")) ::
+  ("z", (##, "*")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VBorrowRef "z"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
   ).
@@ -1127,7 +1206,7 @@ Proof.
   - auto_write.
 Qed.
 
-Definition we1_5 : (term * store) :=
+Definition we1_5 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -1136,12 +1215,14 @@ Definition we1_5 : (term * store) :=
     }> "m_lf"
   }> "l_lf"
   ,
-  ("z", (##, "global")) ::
-  ("2", (#0, "global")) ::
+  ("z", (##, "*")) ::
+  ("2", (#0, "*")) ::
   ("y", (# (VOwnRef "2"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we_step5 : we1_4_2 --> we1_5 | "l_lf".
@@ -1151,7 +1232,7 @@ Proof.
   apply sequence_unit.
 Qed.
 
-Definition we1_6 : (term * store) :=
+Definition we1_6 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -1160,12 +1241,14 @@ Definition we1_6 : (term * store) :=
     }> "m_lf"
   }> "l_lf"
   ,
-  ("z", (##, "global")) ::
-  ("2", (##, "global")) ::
+  ("z", (##, "*")) ::
+  ("2", (##, "*")) ::
   ("y", (# (VOwnRef "2"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we_step6 : we1_5 --> we1_6 | "l_lf".
@@ -1173,12 +1256,12 @@ Proof.
   apply R_BlockA.
   apply R_BlockA.
   apply R_Sub_Seq.
-  apply R_Move with (lf := "global").
+  apply R_Move with (lf := "*").
   - auto_read.
   - auto_write.
 Qed.
 
-Definition we1_7 : (term * store) :=
+Definition we1_7 : (term * store * lf_order) :=
   (
   <{
     <{
@@ -1186,12 +1269,14 @@ Definition we1_7 : (term * store) :=
     }> "m_lf"
   }> "l_lf"
   ,
-  ("z", (##, "global")) ::
-  ("2", (##, "global")) ::
+  ("z", (##, "*")) ::
+  ("2", (##, "*")) ::
   ("y", (# (VOwnRef "2"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we_step7 : we1_6 --> we1_7 | "l_lf".
@@ -1202,18 +1287,20 @@ Proof.
   drop_trivial.
 Qed.
 
-Definition we1_8 : (term * store) :=
+Definition we1_8 : (term * store * lf_order) :=
   (
   <{
       Ɛ
   }> "l_lf"
   ,
-  ("z", (##, "global")) ::
-  ("2", (##, "global")) ::
+  ("z", (##, "*")) ::
+  ("2", (##, "*")) ::
   ("y", (# (VOwnRef "2"), "l_lf")) ::
-  ("1", (##, "global")) ::
+  ("1", (##, "*")) ::
   ("x", (#1, "l_lf"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we_step8 : we1_7 --> we1_8 | "l_lf".
@@ -1223,16 +1310,18 @@ Proof.
   simpl. drop_trivial.
 Qed.
 
-Definition we1_9 : (term * store) :=
+Definition we1_9 : (term * store * lf_order) :=
   (
       Ɛ
   ,
-  ("z", (##, "global")) ::
-  ("2", (##, "global")) ::
-  ("y", (##, "global")) ::
-  ("1", (##, "global")) ::
-  ("x", (##, "global"))
+  ("z", (##, "*")) ::
+  ("2", (##, "*")) ::
+  ("y", (##, "*")) ::
+  ("1", (##, "*")) ::
+  ("x", (##, "*"))
   :: nil
+  ,
+  "*" :: nil
   ).
 
 Example we_step9 : we1_8 --> we1_9 | "l_lf".
