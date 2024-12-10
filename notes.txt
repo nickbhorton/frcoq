@@ -1,4 +1,0 @@
-You have to use Inductive definition for partial functions! Look at Imp about
-half way through. If a function does not evaluate because of some extra
-assumption you have to make it part of the Inductive definition so that proofs
-don't work with said results.
