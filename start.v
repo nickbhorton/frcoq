@@ -81,15 +81,21 @@ Fixpoint s_get (st :store) (l : location)
   : option (partial_value * lifetime) :=
   match st with
   | nil => None
-  | ((cl, pv_l) :: tl)%list => if (eqb cl l) then Some pv_l else s_get tl l
+  | ((cl, pv_l) :: tl)%list => if cl =? l then Some pv_l else s_get tl l
   end.
 
+Fixpoint s_get_lf (st :store) (l : location) 
+  : lifetime :=
+  match st with
+  | nil => "*"
+  | ((cl, (_,lf)) :: tl)%list => if (eqb cl l) then lf else s_get_lf tl l
+  end.
 
-Fixpoint s_get_unwrap (st :store) (l : location) 
+Fixpoint s_get_pv (st :store) (l : location) 
   : partial_value :=
   match st with
   | nil => ##
-  | ((cl, (pv,lf)) :: tl)%list => if (eqb cl l) then pv else s_get_unwrap tl l
+  | ((cl, (pv,lf)) :: tl)%list => if cl =? l then pv else s_get_pv tl l
   end.
 
 
@@ -388,45 +394,64 @@ for write to succed the location l has to already be alocated in st.
 *)
 
 Inductive write: store -> lval -> partial_value -> store -> Prop :=
-  | Write : forall (st st' : store) (pv : partial_value) (l : location) (w : lval),
-      s_eq (s_remove_l st l) (s_remove_l st' l) = true ->
-      (exists (lf : lifetime ), (s_get st' l = Some (pv, lf))) ->
+  | WriteDefined : forall (st st' : store) 
+      (l : location) (w : lval) (pv : partial_value) (v : value) (lf : lifetime),
+      s_update st l (# v,lf) = st' ->
+      s_get st l = Some (pv, lf) ->
+      s_get st' l = Some (# v, lf) ->
       loc st w l ->
-      write st w pv st'.
+      write st w (# v) st'
+  | WriteUndefined : forall (st st' : store) 
+      (l : location) (w : lval) (pv : partial_value) (lf : lifetime),
+      s_update st l (##,"*") = st' ->
+      s_get st l = Some (pv, lf) ->
+      s_get st' l = Some (##, "*") ->
+      loc st w l ->
+      write st w ## st'.
 
-Ltac write_rule lv :=
-  apply Write with (l := lv); 
+Ltac write_defined_rule lv lfv pvv :=
+  apply WriteDefined with (l := lv) (lf := lfv) (pv := pvv); 
+    try (simpl; reflexivity);
+    try (simpl; eauto);
+    try auto_loc.
+
+Ltac write_undefined_rule lv lfv :=
+  apply WriteUndefined with (l := lv) (lf := lfv); 
     try (simpl; reflexivity);
     try (simpl; eauto);
     try auto_loc.
 
 Ltac auto_write :=
   match goal with 
-  | [ |- write ?st (LVar ?l) ?pv ?st' ] => write_rule l
-  | [ |- write ?st ?w ?pv ?st' ] => write_rule (deref_loc_repeat st w)
+  | [ |- write ?st (LVar ?l) ?pv' ?st' ] =>
+      try write_defined_rule l (s_get_lf st l) (s_get_pv st l);
+      try write_undefined_rule l (s_get_lf st l) (s_get_pv st l)
+  | [ |- write ?st ?w ?pv ?st' ] => 
+      try write_defined_rule (deref_loc_repeat st w) 
+      (s_get_lf st (deref_loc_repeat st w)) 
+      (s_get_pv st (deref_loc_repeat st w));
+      try write_undefined_rule (deref_loc_repeat st w) 
+      (s_get_lf st (deref_loc_repeat st w)) 
+      (s_get_pv st (deref_loc_repeat st w))
   end.
 
 
 Definition es_1 :=
-  ("x", (#0,         "lifetime_l")) ::
+  ("x", (#0, "l")) ::
     nil.
 
-Definition es_1' := s_update es_1 "x" (#1, "lifetime_l").
+Definition es_1' := s_update es_1 "x" (#1, "l").
 
 Example write_ex1 :
   write nil (LVar "x") (#0) es_1.
 Proof.
-  apply Write with (l := "x").
-  + simpl. reflexivity.
-  + simpl. eauto.
-  + apply Loc_Var. simpl.  
-  Abort.
-    (* this fails because x was not defined in st*)
+Abort. (* this fails because x was not defined in st*)
 
 Example write_ex2 :
   write es_1 (LVar "x") (#1) es_1'.
 Proof.
-  apply Write with (l := "x").
+  apply WriteDefined with (l := "x") (lf := "l") (pv := #0).
+  - simpl. eauto.
   - simpl. eauto.
   - simpl. eauto.
   - loc_var.
@@ -447,7 +472,8 @@ Definition es_3 := s_update es_2 "x" (#2, "lifetime_l").
 Example write_ex3 :
   write es_2 (LDeref (LVar "p")) (#2) es_3.
 Proof.
-  apply Write with (l := "x").
+  apply WriteDefined with (l := "x") (pv := #1) (lf := "lifetime_l").
+  + simpl. eauto.
   + simpl. eauto.
   + simpl. eauto.
   + loc_deref "p".
@@ -456,7 +482,8 @@ Qed.
 Example write_ex3' :
   write (("x", (##, "m")):: nil) (LVar "x") #1 (("x", (#1, "m")) :: nil).
 Proof.
-  apply Write with (l := "x").
+  apply WriteDefined with (l := "x") (pv := ##) (lf := "m").
+  + simpl. eauto.
   + simpl. eauto.
   + simpl. eauto.
   + auto_loc.
@@ -516,8 +543,8 @@ Inductive drop : store -> list partial_value -> store -> Prop :=
       (forall (l : location), (pv <> # (VOwnRef l))) ->
       drop st1 (cons pv tl) st1
   | D_cons_own : forall (st1 st2 st3: store) (tl : list partial_value) (l : location),
-      s_get_unwrap st2 l = ## ->
-      drop st2 (s_get_unwrap st1 l :: tl) st3  ->
+      s_get_pv st2 l = ## ->
+      drop st2 (s_get_pv st1 l :: tl) st3  ->
       drop st1 ((# (VOwnRef l)) :: tl) st3.
 
 
@@ -586,25 +613,6 @@ Compute lfo_lt test_lfo "p" "q".
 
 Compute lfo_lt test_lfo "l" "m".
 
-Fixpoint fully_defined_helper (st : store) (lf : lifetime) : bool :=
-  match st with
-  | nil => true
-  | (_, (##, lf)) :: tl => false 
-  | _ :: tl => andb true (fully_defined_helper tl lf)
-  end.
-
-Fixpoint fully_defined (st : store) (lfo : lf_order) : Prop :=
-  match lfo with
-  | nil => True
-  | lf :: tl => if lf =? "*" then True else
-      fully_defined_helper st lf = true /\ fully_defined st tl
-  end.
-
-Definition sound_order (st : store) (lfo : lf_order) : Prop :=
-  match lfo with 
-  | nil => True
-  | lf :: tl => fully_defined st tl
-  end.
 
 Reserved Notation " t '-->' t' '|' l" (at level 40).
 
@@ -661,14 +669,6 @@ Inductive step : lifetime -> (term * store * lf_order) -> (term * store * lf_ord
     (TDeclaration x t1, st1, lfo) --> (TDeclaration x t2, st2, lfo) | l_lf
 where " t '-->' t' '|' l" := (step l t t').
 
-Theorem lifetime_soundness:
-  forall (st st' : store) (t t' : term) (lfo lfo' : lf_order) (l : lifetime),
-  sound_order st lfo ->
-  (t, st, lfo) --> (t', st', lfo') | l ->
-  sound_order st' lfo'.
-Proof. 
-  intros st st' t t' lfo' lfo slf. intros H1 H2. inversion H2; subst; try apply H1.
-  -
 
 Inductive multi : Prop -> Prop :=
   | multi_refl : forall (ts : term * store * lf_order) (lf : lifetime) ,
@@ -951,13 +951,6 @@ Proof.
   - auto.
 Qed.
 
-Compute sound_order (
-  ("2", (#0, "*")) ::
-  ("y", (# (VOwnRef "1"), "l_lf")) ::
-  ("1", (#1, "*")) ::
-  ("x", (#1, "l_lf"))
-  :: nil) ("m_lf" :: "l_lf" :: "*" :: nil).
-
 Definition we1_2_2 : (term * store * lf_order) :=
   (
   <{
@@ -1169,7 +1162,11 @@ Proof.
   apply R_Sub_Asg.
   apply R_Move with (lf := "m_lf").
   - auto_read.
-  - auto_write.
+  - apply WriteUndefined with (l := "z") (pv := (# (VOwnRef "2"))) (lf := "m_lf").
+    + simpl; reflexivity.
+    + simpl; reflexivity.
+    + simpl; reflexivity.
+    + auto_loc.
 Qed.
 
 Definition we1_4_2 : (term * store * lf_order) :=
@@ -1263,7 +1260,11 @@ Proof.
   apply R_Sub_Seq.
   apply R_Move with (lf := "*").
   - auto_read.
-  - auto_write.
+  - apply WriteUndefined with (l := "2") (pv := #0) (lf := "*").
+    + simpl. reflexivity.
+    + simpl. reflexivity.
+    + simpl. reflexivity.
+    + auto_loc.
 Qed.
 
 Definition we1_7 : (term * store * lf_order) :=
@@ -1335,3 +1336,58 @@ Proof.
   simpl. 
   drop_trivial.
 Qed.
+
+Fixpoint fully_defined_helper (st : store) (lf : lifetime) : Prop :=
+  match st with
+  | nil => True
+  | (_, (##, lf)) :: tl => if lf =? "*" then True else False
+  | _ :: tl => fully_defined_helper tl lf
+  end.
+
+Fixpoint fully_defined (st : store) (lfo : lf_order) : Prop :=
+  match lfo with
+  | nil => True
+  | lf :: tl => fully_defined_helper st lf /\ fully_defined st tl
+  end.
+
+Definition sound_order (st : store) (lfo : lf_order) : Prop :=
+  match lfo with 
+  | nil => True
+  | lf :: tl => fully_defined st tl
+  end.
+
+Theorem fully_defined_update:
+  forall (st : store) (lfo : lf_order) (l : location) 
+  (pv : partial_value) (lf : lifetime),
+  fully_defined st lfo ->
+  fully_defined (s_update st l (##, "*")) lfo.
+Proof. 
+intros st lfo l pv lf H1.
+  induction lfo as [| lf' lfo IHlfo].
+  + auto.
+  + simpl. split.
+    - destruct H1 as [H11 H12]. 
+      induction st as [| [l' pv'] st'] eqn:E1.
+      * simpl. auto.
+      * simpl. destruct (l' =? l) eqn:E2.
+        { simpl. auto. }
+        { 
+    - apply IHlfo. destruct H1. assumption.
+
+(* 
+
+(*Theorem fully_defined_tl:
+  forall (st : store) (lf' : lifetime)
+
+ *)
+
+Theorem lifetime_soundness:
+  forall (st st' : store) (t t' : term) (lfo lfo' : lf_order) (l : lifetime),
+  sound_order st lfo ->
+  (t, st, lfo) --> (t', st', lfo') | l ->
+  sound_order st' lfo'.
+Proof. 
+  intros st st' t t' lfo' lfo slf. intros H1 H2. inversion H2; subst; try apply H1.
+  - inversion H9; subst. induction lfo as [| lf' lfo IH].
+    + auto.
+    + simpl. unfold sound_order in H1.
