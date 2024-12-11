@@ -586,21 +586,24 @@ Compute lfo_lt test_lfo "p" "q".
 
 Compute lfo_lt test_lfo "l" "m".
 
-Fixpoint fully_defined (lst : list partial_value) : bool :=
-  match lst with
+Fixpoint fully_defined_helper (st : store) (lf : lifetime) : bool :=
+  match st with
   | nil => true
-  | pv :: tl => match pv with
-                | PVUndefined => false
-                | _ => fully_defined tl
-                end
+  | (_, (##, lf)) :: tl => false 
+  | _ :: tl => andb true (fully_defined_helper tl lf)
   end.
 
-Definition sound_order (st : store) (lfo : lf_order) : bool :=
+Fixpoint fully_defined (st : store) (lfo : lf_order) : Prop :=
+  match lfo with
+  | nil => True
+  | lf :: tl => if lf =? "*" then True else
+      fully_defined_helper st lf = true /\ fully_defined st tl
+  end.
+
+Definition sound_order (st : store) (lfo : lf_order) : Prop :=
   match lfo with 
-  | nil => true
-  | lf :: nil => true
-  | lf :: "*" :: tl => true
-  | lf1 :: lf2 :: tl => fully_defined (collect_pvs st (collect_in_scope st lf2 nil) nil)
+  | nil => True
+  | lf :: tl => fully_defined st tl
   end.
 
 Reserved Notation " t '-->' t' '|' l" (at level 40).
@@ -659,11 +662,13 @@ Inductive step : lifetime -> (term * store * lf_order) -> (term * store * lf_ord
 where " t '-->' t' '|' l" := (step l t t').
 
 Theorem lifetime_soundness:
-  forall (st st' : store) (t t' : term) (lfo : lf_order) (l : lifetime),
+  forall (st st' : store) (t t' : term) (lfo lfo' : lf_order) (l : lifetime),
   sound_order st lfo ->
-  sound_order st' lfo ->
-  (t, st, lfo) --> (t', st', lfo) | l.
-ENDHERE
+  (t, st, lfo) --> (t', st', lfo') | l ->
+  sound_order st' lfo'.
+Proof. 
+  intros st st' t t' lfo' lfo slf. intros H1 H2. inversion H2; subst; try apply H1.
+  -
 
 Inductive multi : Prop -> Prop :=
   | multi_refl : forall (ts : term * store * lf_order) (lf : lifetime) ,
