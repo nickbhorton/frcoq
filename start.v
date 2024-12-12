@@ -81,7 +81,13 @@ Fixpoint s_get (st :store) (l : location)
   : option (partial_value * lifetime) :=
   match st with
   | nil => None
-  | ((cl, pv_l) :: tl)%list => if cl =? l then Some pv_l else s_get tl l
+  | (cl, pv_l) :: tl => if cl =? l then Some pv_l else s_get tl l
+  end.
+
+Fixpoint s_in (st : store) (l : location) : Prop :=
+  match st with
+  | nil => False
+  | (cl,_) :: tl => if (l =? cl) then True else s_in tl l
   end.
 
 Fixpoint s_get_lf (st :store) (l : location) 
@@ -396,14 +402,14 @@ for write to succed the location l has to already be alocated in st.
 Inductive write: store -> lval -> partial_value -> store -> Prop :=
   | WriteDefined : forall (st st' : store) 
       (l : location) (w : lval) (pv : partial_value) (v : value) (lf : lifetime),
-      s_update st l (# v,lf) = st' ->
+      s_remove_l st l = s_remove_l st' l ->
       s_get st l = Some (pv, lf) ->
       s_get st' l = Some (# v, lf) ->
       loc st w l ->
       write st w (# v) st'
   | WriteUndefined : forall (st st' : store) 
       (l : location) (w : lval) (pv : partial_value) (lf : lifetime),
-      s_update st l (##,"*") = st' ->
+      s_remove_l st l = s_remove_l st' l ->
       s_get st l = Some (pv, lf) ->
       s_get st' l = Some (##, "*") ->
       loc st w l ->
@@ -1356,31 +1362,6 @@ Definition sound_order (st : store) (lfo : lf_order) : Prop :=
   | lf :: tl => fully_defined st tl
   end.
 
-Theorem fully_defined_update:
-  forall (st : store) (lfo : lf_order) (l : location) 
-  (pv : partial_value) (lf : lifetime),
-  fully_defined st lfo ->
-  fully_defined (s_update st l (##, "*")) lfo.
-Proof. 
-intros st lfo l pv lf H1.
-  induction lfo as [| lf' lfo IHlfo].
-  + auto.
-  + simpl. split.
-    - destruct H1 as [H11 H12]. 
-      induction st as [| [l' pv'] st'] eqn:E1.
-      * simpl. auto.
-      * simpl. destruct (l' =? l) eqn:E2.
-        { simpl. auto. }
-        { 
-    - apply IHlfo. destruct H1. assumption.
-
-(* 
-
-(*Theorem fully_defined_tl:
-  forall (st : store) (lf' : lifetime)
-
- *)
-
 Theorem lifetime_soundness:
   forall (st st' : store) (t t' : term) (lfo lfo' : lf_order) (l : lifetime),
   sound_order st lfo ->
@@ -1388,6 +1369,31 @@ Theorem lifetime_soundness:
   sound_order st' lfo'.
 Proof. 
   intros st st' t t' lfo' lfo slf. intros H1 H2. inversion H2; subst; try apply H1.
-  - inversion H9; subst. induction lfo as [| lf' lfo IH].
+  - destruct lfo as [| lf' lfo].
     + auto.
-    + simpl. unfold sound_order in H1.
+    + simpl. simpl in H1. induction lfo as [| lf'' lfo].
+      * auto.
+      * simpl. split.
+        {
+          induction st' as [|(lh, (pvh, lfh)) tl'].
+          { simpl; auto. }
+          { simpl. destruct pvh eqn:E.
+            { admit. }
+            { admit. } } }
+
+        { simpl in H1. destruct H1. apply IHlfo; try auto. apply R_Move with (lf := lf); try auto. }
+  - destruct lfo as [| lf' lfo].
+Abort.
+
+Theorem step_deterministic:
+  forall (st st' : store) (t t1 t2 : term) (lfo lfo' : lf_order) (l : lifetime),
+  (t, st, lfo) --> (t1, st', lfo') | l ->
+  (t, st, lfo) --> (t2, st', lfo') | l ->
+  (t1 = t2).
+Proof. 
+  intros st st' t t1 t2 lfo lfo' l Ht1 Ht2. generalize dependent t2.
+  induction Ht1. 
+  + intros t2 Ht2. inversion Ht2; subst. inversion H2; subst.
+
+
+
