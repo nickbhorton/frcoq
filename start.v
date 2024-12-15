@@ -4,13 +4,17 @@ From Coq Require Import Init.Nat.
 From Coq Require Import Arith.Arith.
 From Coq Require Import Arith.EqNat. Import Nat.
 From Coq Require Import Strings.String.
+From Coq Require Import Strings.String.
+From Coq Require Import Lists.List.
+
+From FR Require Import maps.
 
 Open Scope string.
 Open Scope list.
 
 (* locations are strings *)
 Definition location := string.
-Definition lifetime := string.
+Definition lifetime := nat.
 
 (* RF definitions *)
 Inductive lval : Type :=
@@ -54,15 +58,98 @@ Coercion LVar : string >-> lval.
 Coercion TValue : value >-> term.
 Notation "'#' v" := (PVDefined v) (at level 0).
 Notation "'##'" := (PVUndefined) (at level 0).
-Notation "s1 ; s2" := (TSeq s1 s2) (at level 90, right associativity).
+Notation "s1 ;; s2" := (TSeq s1 s2) (at level 90, right associativity).
 Notation "'<{' p '}>' lf" := (TBlock p lf) (at level 91, right associativity).
 Notation "'Ɛ'" := (TValue VUnit) (at level 80).
 
 
 (* state *)
-Definition store := list (location * (partial_value * lifetime)).
+Definition store := 
+  prod (location -> option (partial_value * lifetime)) (list (lifetime * list location)).
 
-Notation "lx '|->' '[' pv ']' lf" := ((lx, (pv,lf))) (at level 70).
+Definition store_invar (st : store) : Prop :=
+  forall (x : lifetime * list location), In x (snd st) ->
+  forall (l : location), In l (snd x) ->
+  exists (p : partial_value * lifetime), (fst st) l = Some p.
+
+Definition store1 : store :=
+  (("x" |-> (#0, 1)), [(1, ["x"])]).
+Example store1_invar: store_invar store1.
+Proof.
+  intros x H1 l H2. exists (#0, 1). destruct H1. 
+  + rewrite <- H in H2. destruct H2.
+    - rewrite <- H0. cbn. reflexivity.
+    - destruct H0.
+  + destruct H.
+Qed.
+
+Definition store2 : store :=
+  (("y" |-> (# (VBorrowRef "x"), 1); "x" |-> (#1, 1)), [(1, ["x"; "y"])]).
+Example store2_invar: store_invar store2.
+Proof.
+  intros x H1 l H2. destruct H1.
+  + rewrite <- H in H2. destruct H2.
+    - rewrite <- H0. exists (#1, 1). auto.
+    - destruct H0.
+      * rewrite <- H0. exists (# (VBorrowRef "x"), 1). auto.
+      * destruct H0.
+  + destruct H.
+Qed.
+
+Definition store3 : store :=
+  (("y" |-> (# (VBorrowRef "x"), 2); "x" |-> (#1, 1)), 
+    [(1, ["x"]); (2, ["y"])]).
+Example store3_invar: store_invar store3.
+Proof.
+  intros x H1 l H2. destruct H1.
+  + rewrite <- H in H2. destruct H2.
+    - rewrite <- H0. exists (#1, 1). auto.
+    - destruct H0.
+  + destruct H.
+    - rewrite <- H in H2. destruct H2.
+      * rewrite <- H0. exists (# (VBorrowRef "x"), 2). auto.
+      * destruct H0.
+    - destruct H.
+Qed.
+
+(* this function pair adds a new value to the store *)
+Fixpoint add_loc (lst : list (lifetime * list location)) (l : location) (lf : lifetime) :
+  list (lifetime * list location) :=
+  match lst with
+  | nil => [(lf, [l])]
+  | (lf', loc_lst) :: tl => if (Nat.eqb lf' lf) 
+      then (lf', l :: loc_lst) :: tl
+      else (lf', loc_lst) :: (add_loc tl l lf)
+  end.
+
+Definition s_alloc (st : store) (l : location) (pv : partial_value) (lf : lifetime) : 
+  store :=
+  (l |-> (pv, lf); fst st,
+      match snd st with
+      | [] => ([(lf, [l])])
+      | lst =>  add_loc lst l lf
+      end
+  ).
+
+Theorem store_invar_s_alloc:
+  forall st l pv lf,
+  store_invar st ->
+  store_invar (s_alloc st l pv lf).
+Proof.
+  intros st l pv lf' H. destruct st as [pm lf_locs]. induction lf_locs as [| [lf locs] lf_locs'].
+  + unfold s_alloc. simpl. unfold store_invar. intros x H1 l' H2. simpl.
+    simpl in H1. destruct H1.
+    - rewrite <- H0 in H2. simpl in H2. destruct H2.
+      * rewrite H1. exists (pv,lf'). unfold update. unfold t_update. rewrite eqb_refl. reflexivity.
+      * destruct H1.
+    - destruct H0.
+  + unfold s_alloc; simpl. destruct a as [lf' locs']. simpl. destruct (lf' =? lf)%nat eqn:E.
+    - (*symmetry in E. apply EqNat.beq_nat_eq_stt in E . *) unfold s_alloc in IHlf_locs. 
+      simpl in IHlf_locs. destruct lf_locs.
+      * simpl.
+        
+
+
 
 Definition s_push (st : store) (l : location) (pv_l : partial_value * lifetime) 
   : store :=
