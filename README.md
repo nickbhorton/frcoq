@@ -254,14 +254,14 @@ Here is our program code example and program store.
 ### Step 1
 ```
   <{
-    TDeclaration "x" 1;
+    TDeclaration "x" (TValue 1);
     TDeclaration "y" (TBox (TCopy "x"));
     <{
       TDeclaration "z" (TBox 0);
       TAssignment "y" (TBorrow "z");
       TAssignment "y" (TMove "z");
       TMove (LDeref "y");
-      Ɛ
+      ()
     }>^"m"
   }>^"l"
 ```
@@ -282,14 +282,14 @@ After we apply this rule we are left to prove `< S1 | t1 --> S2 | t2 >^m`
 ### Step 1.1
 Step 1 -> apply BlockA
 ```
-    TDeclaration "x" 1;
+    TDeclaration "x" (TValue 1);
     TDeclaration "y" (TBox (TCopy "x"));
     <{
       TDeclaration "z" (TBox 0);
       TAssignment "y" (TBorrow "z");
       TAssignment "y" (TMove "z");
       TMove (LDeref "y");
-      Ɛ
+      TValue ()
     }>^"m"
 ```
 | location | partial value | lifetime |
@@ -308,7 +308,7 @@ Again after we apply this rule we are left to prove ` < S1 | t1 --> S2 | t2 >^l`
 ### Step 1.2
 Step 1 -> apply BlockA -> apply SubSeq
 ```
-    TDeclaration "x" 1
+    TDeclaration "x" (TValue 1)
 ```
 | location | partial value | lifetime |
 |  --------  |  -------  | -------- |
@@ -317,16 +317,16 @@ Step 1 -> apply BlockA -> apply SubSeq
 Now we are getting somewhere. Because this is a simple declaration (term of RHS is just the value 1) it corresponds to the declaration rule.
 #### Rule: Declaration
 ```
-S1[x -> <v>^l)] = S2
+S1[x -> <v>^l] = S2
 --------------------------------------------------------
-< S1 | TDeclaration (string x) (value v) --> S2 | () >^l
+< S1 | TDeclaration (string x) (TValue v) --> S2 | TValue () >^l
 ```
 As you can see in the rule, there are effects on the program store.
 ***
 ### Step 1.3
 Step 1 -> apply BlockA -> apply SubSeq -> apply Declaration
 ```
-    ()
+    TValue ()
 ```
 | location | partial value | lifetime |
 |  --------  |  -------  | -------- |
@@ -347,7 +347,7 @@ The interesting thing that the declaration rule did was give us our first alloca
       TAssignment "y" (TBorrow "z");
       TAssignment "y" (TMove "z");
       TMove (LDeref "y");
-      Ɛ
+      TValue ()
     }>^"m"
 }>^"l"
 ```
@@ -358,14 +358,14 @@ The interesting thing that the declaration rule did was give us our first alloca
 
 -> apply BlockA
 ```
-    ();
+    TValue ();
     TDeclaration "y" (TBox (TCopy "x"));
     <{
       TDeclaration "z" (TBox 0);
       TAssignment "y" (TBorrow "z");
       TAssignment "y" (TMove "z");
       TMove (LDeref "y");
-      Ɛ
+      TValue ()
     }>^"m"
 ```
 | location | partial value | lifetime |
@@ -377,7 +377,7 @@ From this state we cannot step into the first term of the sequence because it is
 #### Rule: Seq
 ```
 drop(S1, {v}) = S2
---------------------------------------------------------
+--------------------------------------
 < S1 | TSeq (value v) t --> S2 | t >^l
 ```
 ***
@@ -390,7 +390,7 @@ Step 2 -> apply BlockA -> apply Seq
       TAssignment "y" (TBorrow "z");
       TAssignment "y" (TMove "z");
       TMove (LDeref "y");
-      Ɛ
+      TValue ()
     }>^"m"
 ```
 | location | partial value | lifetime |
@@ -400,33 +400,337 @@ Step 2 -> apply BlockA -> apply Seq
 
 Note that drop with the unit value did nothing to the program store.
 
-Now we have something much more complicated on the RHS of the declaration. Intuitivly we should make a rule that steps into the RHS of the declaration. This is what the SubDeclaration
+Now we have something much more complicated on the RHS of the declaration. Intuitivly we should make a rule that steps into the RHS of the declaration. This is what the SubDeclaration rule does.
+#### Rule: SubDeclaration
+```
+< S1 | t1 --> S2 | t2 >^l
+-------------------------------------------------------
+< S1 | TDeclaration (string x) t1 --> S2 | TDeclaration (string x) t2 >^l
+```
+***
+### Step 2.2
+Step 2 -> apply BlockA -> apply Seq -> apply SubSeq -> apply SubDeclaration
+```
+    TBox (TCopy "x")
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+So now we see we have a TBox with something inside of it. Again this means we need to step inside of the TBox. This is what the SubBox rule does.
+#### Rule: SubBox
+```
+< S1 | t1 --> S2 | t2 >^l
+-------------------------------------------------------
+< S1 | TBox t1 --> S2 | TBox t2 >^l
+```
+***
+### Step 2.3
+Step 2 -> apply BlockA -> apply Seq -> apply SubSeq -> apply SubDeclaration -> apply SubBox
+```
+    TCopy "x"
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
 
 
+Here we are at some of the semantic rules we talked about in C and C++ sections. The x variable is an integer which is very cheap to copy. In Rust most base types like int, float, double, unsigned int, ect are all default copy-able. Meaning you don't have explicitly call the *copy()* method. But for vector wrapped types or arrays, you would have to call copy. In Rust if you notice your program is slow you can immediately see what is being copied. In C++ the copy semantic are too subtle.
 
-
-
-
-#### R_Copy
+The Copy rule is as follows.
+#### Rule: Copy
 ```
 read(S,w) = <v>^m
 -----------
-< S | TCopy(w) --> S | v >^l
+< S | TCopy(w) --> S | TValue v >^l
 ```
-#### R_Move
+For this rule all you have to prove is that the store S has a value associated with the *lval* w.
+***
+### Step 2.4
+Step 2 -> apply BlockA -> apply Seq -> apply SubSeq -> apply SubDeclaration -> apply SubBox -> apply Copy
+```
+    TValue 1
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+
+
+### Step 3
+```
+<{
+    TDeclaration "y" (TBox (TValue 1));
+    <{
+      TDeclaration "z" (TBox 0);
+      TAssignment "y" (TBorrow "z");
+      TAssignment "y" (TMove "z");
+      TMove (LDeref "y");
+      TValue ()
+    }>^"m"
+}>^"l"
+```
+-> apply BlockA -> apply SubSeq -> apply SubDeclaration
+```
+    TBox (TValue 1);
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+
+
+We do not need to further reduce the term inside of TBox. We are ready for the Box rule
+#### Rule: Box
+```
+S1(n) = None
+S1[n -> (v, "*")] = S2
+-------------------------------------------------------
+< S1 | TBox (TValue v) --> S2 | TValue (VOwnRef n) >^l
+```
+First, the evaluation of a TBox results in an owning reference. This embodies the Rust ownership concept. When something is allocated on the heap, ownership is explicitly created. The string n is a memory location but it is wrapped an owning permission structure.
+
+Second, the lifetime of n is global or "*". A heap variable will only deallocate when a owning reference is dropped via the drop function (This is the primary function of the drop function).
+
+*Technical note*: It is conceivable that you could wrap a TBox with a TBox, this is why the drop partial function is so strange. It has to be able to recursively deallocate locations.
+***
+### Step 3.1
+Step 3 -> apply BlockA -> apply SubSeq -> apply SubDeclaration -> apply Box
+```
+    TValue (VOwnRef "1");
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | 1 | "*" |
+
+***
+### Step 4
+```
+<{
+    TDeclaration "y" (TValue (VOwnRef "1"));
+    <{
+      TDeclaration "z" (TBox 0);
+      TAssignment "y" (TBorrow "z");
+      TAssignment "y" (TMove "z");
+      TMove (LDeref "y");
+      TValue ()
+    }>^"m"
+}>^"l"
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | 1 | "*" |
+
+
+-> apply BlockA -> apply SubSeq -> apply Declaration
+```
+<{
+    TValue ();
+    <{
+      TDeclaration "z" (TBox 0);
+      TAssignment "y" (TBorrow "z");
+      TAssignment "y" (TMove "z");
+      TMove (LDeref "y");
+      TValue ()
+    }>^"m"
+}>^"l"
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | 1 | "*" |
+| "y" | OwnRef "1" | "l" |
+
+
+-> apply BlockA -> apply Seq
+```
+<{
+    <{
+      TDeclaration "z" (TBox 0);
+      TAssignment "y" (TBorrow "z");
+      TAssignment "y" (TMove "z");
+      TMove (LDeref "y");
+      TValue ()
+    }>^"m"
+}>^"l"
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | 1 | "*" |
+| "y" | OwnRef "1" | "l" |
+
+Moving to the next command is not worth doing again so going forward I will omit this.
+
+Now we are outside of two blocks so to get to the next declaration we must apply BlockA twice. Otherwise we have scene this before so I will omit all the intermediate steps.
+***
+### Step 5
+```
+<{
+    <{
+      TAssignment "y" (TBorrow "z");
+      TAssignment "y" (TMove "z");
+      TMove (LDeref "y");
+      TValue ()
+    }>^"m"
+}>^"l"
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | 1 | "*" |
+| "y" | OwnRef "1" | "l" |
+| "0" | 0 | "*" |
+| "z" | OwnRef "0" | "m" |
+
+The new z variable has a lifetime of m because it was initialized inside of the m scope. Otherwise we see a new type of statement. The assignment statement. This is how you redeclare or assign a new value to a previously declared variable. But first we must deal with the new term TBorrow.
+
+To step inside of the assignment we use the SubAssign rule
+#### Rule: SubAssign
+```
+< S1 | t1 --> S2 | t2 >^l
+-------------------------------------------------------
+< S1 | TAssignment x t1 --> S2 | TAssignment x t2 >^l
+```
+
+***
+### Step 5.1
+Step 5 -> apply BlockA -> apply BlockA  -> apply SubAssign
+```
+	 TBorrow "z"
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | 1 | "*" |
+| "y" | OwnRef "1" | "l" |
+| "0" | 0 | "*" |
+| "z" | OwnRef "0" | "m" |
+
+Now we need a rule for borrowing or mutably borrowing. Rust has some complex rules for what a borrow vs a mutable borrow is but in general only one mutable borrow or multiple borrows can "live" at any given time for any given location.
+#### Rule : Borrow
+```
+loc(S, w) = "lw"
+-------------------------------------------------------
+< S | TBorrow w --> S | TValue (VBorrowRef "lw" ) >^l
+```
+#### Rule : MutableBorrow
+```
+loc(S, w) = "lw"
+-------------------------------------------------------
+< S | TMutBorrow w --> S | TValue (VOwnRef "lw" ) >^l
+```
+***
+### Step 5.1
+Step 5 -> apply BlockA -> apply BlockA  -> apply SubAssign -> apply Borrow
+```
+	 TValue (VRef "z")
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | 1 | "*" |
+| "y" | OwnRef "1" | "l" |
+| "0" | 0 | "*" |
+| "z" | OwnRef "0" | "m" |
+
+***
+### Step 6
+```
+<{
+    <{
+      TAssignment "y" (TValue (VBorrowRef "z"));
+      TAssignment "y" (TMove "z");
+      TMove (LDeref "y");
+      TValue ()
+    }>^"m"
+}>^"l"
+```
+-> apply BlockA -> apply BlockA -> apply SubSeq
+```
+      TAssignment "y" (TValue (VRef "z"));
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | 1 | "*" |
+| "y" | OwnRef "1" | "l" |
+| "0" | 0 | "*" |
+| "z" | OwnRef "0" | "m" |
+
+
+#### Rule: Assignment
+```
+read(S1, w) = (pv1, lf) /\ drop(S1, (pv1 :: nil)) = S3
+write(S2, w, (PVDefined v2)) = S3 ->
+----------------------------------------------
+< S1 | TAssignment w (TValue v2) --> S3 TValue () >^l
+```
+This is one of the most interesting rules in the semantics. It says if there is some value in the store already associated with *w* then drop that value and write the new value in the same location. When a value is dropped it recursively deallocates owning references. In the case of step 6, y has an owned reference and so when we apply this rule that owned reference will be deallocated.
+***
+### Step 6.1
+```
+      TValue TUnit
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | PVUndefined | "*" |
+| "y" | BorrowRef "z" | "l" |
+| "0" | 0 | "*" |
+| "z" | OwnRef "0" | "m" |
+
+
+Note that the location "1" now has an undefined value.
+***
+### Step 7
+```
+<{
+    <{
+      TAssignment "y" (TMove "z");
+      TMove (LDeref "y");
+      TValue ()
+    }>^"m"
+}>^"l"
+```
+-> apply BlockA -> apply BlockA -> apply SubSeq -> apply SubAssign
+```
+      TMove "z";
+```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | PVUndefined | "*" |
+| "y" | BorrowRef "z" | "l" |
+| "0" | 0 | "*" |
+| "z" | OwnRef "0" | "m" |
+
+
+Here is the move rule.
+#### Rule : Move
 ```
 read(S1,w) = <v>^m
 write(S1,w,PVUndefined) = S2
 -----------
-< S1 | TMove(w) --> S2 | v >^l
+< S1 | TMove(w) --> S2 | TValue v >^l
 ```
-#### R_Move
+***
+### Step 7.1
+-> apply BlockA -> apply BlockA -> apply SubSeq -> apply SubAssign -> apply Move
 ```
-read(S1,w) = <v>^m
-write(S1,w,PVUndefined) = S2
------------
-< S1 | TMove(w) --> S2 | v >^l
+      TValue (VOwnRef "0");
 ```
+| location | partial value | lifetime |
+|  --------  |  -------  | -------- |
+| "x" | 1 | "l" |
+| "1" | PVUndefined | "*" |
+| "y" | BorrowRef "z" | "l" |
+| "0" | 0 | "*" |
+| "z" | PVUndefined | "m" |
+
+
+The final steps are left to the reader, they should be reasonably understandable. If you get stuck look at the "start.v" file in the GitHub as it goes through the whole rigorous proof.
+
+The final rule is what happens when you are left with a TValue VUnit inside of a block. This operates like c++. Any owned references in the scope of the block will be dropped. This is the second fact that makes the drop function strange to look at.
 
 # Sources
 David J. Pearce. 2021. A Lightweight Formalism for Reference Lifetimes and Borrowing in Rust. ACM Trans. Program. Lang. Syst. 43, 1, Article 3 (March 2021), 73 pages. https://doi.org/10.1145/3443420
