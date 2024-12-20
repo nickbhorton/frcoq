@@ -1,3 +1,13 @@
+# Overview
+This project aimed to formalize core Rust calculus and prove type and memory saftey. This was done in the paper of reference. 
+
+Here is a list of things that were accomplished. 
+
+- Small step operational semantics of single threaded core Rust
+- Several smaller semantic functions about generalized memory outside of the map context.
+- Example proof of the reduction of a Rust program from (Around 20 small steps and 6 lines of code executed)
+- LTac features that automate some aspects of program reduction. 
+
 # Memory as a Resource
 As with many great problems in human society, the inciting incident comes down to who owns what resources. Computer memory is no different. It is a resource, critical to the operation of all programs, and without rules and regulations on who owns it, things devolve into madness. 
 
